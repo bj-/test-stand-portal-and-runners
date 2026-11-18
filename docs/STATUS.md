@@ -10,6 +10,11 @@ _Последнее обновление: 2026-11-18_
 
 ## В работе
 
+- По команде владельца 2026-11-18 комплект опубликован и применён к рабочей
+  Windows-установке: портал пересобран, миграции/учётка/настройки проверены,
+  агент запущен, standalone-пример прошёл smoke 2/2. Перед обновлением сделан pg_dump.
+  Дополнительно исправлен Unicode stdout/stderr при работе Python через pipe;
+  local regression: 36 passed /18 подпроверок.
 - Реализованы установщики Windows PowerShell и Ubuntu/macOS Bash: зависимости,
   init/up/health/admin-init/agent-init/agent-start, plan/check и продолжение после reboot.
 - Подключён `stands.worker`: привязка токена к хосту, snapshot до Docker, heartbeat,
