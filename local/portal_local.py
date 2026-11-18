@@ -305,6 +305,10 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Redirected Windows streams can default to cp1251; Docker emits UTF-8 progress.
+    for stream in (sys.stdout, sys.stderr):
+        if callable(getattr(stream, "reconfigure", None)):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     args = parser().parse_args(argv)
     try:
         workspace = workspace_path(args.workspace)

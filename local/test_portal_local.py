@@ -258,6 +258,31 @@ class LocalInstallationTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "failure: [REDACTED]\n")
         self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
 
+    def test_redirected_cp1251_streams_forward_unicode_compose_output(self):
+        self.init()
+        script = """
+import sys
+from unittest.mock import patch
+sys.path.insert(0, sys.argv[1])
+import portal_local as local
+status = int(sys.argv[3])
+child = "import sys; sys.stdout.buffer.write(bytes.fromhex('e2948120f09f9a802070726f67726573730a')); sys.exit(" + str(status) + ")"
+with patch.object(local, "check_docker", return_value="docker"), patch.object(
+        local, "compose_command", return_value=[sys.executable, "-c", child]):
+    result = local.main(["--workspace", sys.argv[2], "up"])
+print(chr(0x2501), file=sys.stderr)
+raise SystemExit(result)
+"""
+        for status in (0, 17):
+            with self.subTest(status=status):
+                result = subprocess.run([sys.executable, "-c", script, str(local.REPO / "local"),
+                                         str(self.workspace), str(status)],
+                                        env=dict(os.environ, PYTHONIOENCODING="cp1251"),
+                                        capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, status, result.stderr.decode("utf-8", errors="replace"))
+                self.assertEqual(result.stdout.decode("utf-8").splitlines(), ["\u2501 \U0001f680 progress"])
+                self.assertEqual(result.stderr.decode("utf-8").splitlines(), ["\u2501"])
+
     def test_user_add_preserves_terminal_and_rejects_a_pipe(self):
         with patch.object(local.sys, "stdin") as stdin, patch.object(local.sys, "stdout") as stdout, \
                 patch.object(local.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
