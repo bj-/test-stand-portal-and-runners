@@ -1,0 +1,18 @@
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:${STAND_PORT:-18080}:8080"
+  runner:
+    build: .
+    profiles: [test]
+    depends_on:
+      - app
+    environment:
+      BASE_URL: http://app:8080
+      OUTPUT_DIR: /results
+    volumes:
+      - type: bind
+        source: ${OUTPUT_DIR:?Set OUTPUT_DIR to an absolute external results directory}
+        target: /results
+    command: ["python", "runner.py"]
