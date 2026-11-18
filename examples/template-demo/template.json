@@ -1,0 +1,23 @@
+{
+  "schema_version": 1, "id": "template-demo", "version": "1.0.0",
+  "components": [
+    {"id":"api","repository":"demo","default_ref":"test","dependencies":[]},
+    {"id":"smoke","repository":"demo","default_ref":"test","dependencies":["api"]}
+  ],
+  "compose":{"component":"api","path":"compose.yaml","required_services":["api","runner","reporter"]},
+  "profiles":{"laptop":{"services":["api","runner","reporter"],"resources":{"cpus":1,"memory_mb":512}}},
+  "lifecycle":{
+    "build":[{"component":"api","argv":["docker","compose","build"]}],
+    "deploy":[{"component":"api","argv":["docker","compose","up","-d","api"]}],
+    "migrate":[{"component":"api","argv":["docker","compose","run","--rm","--no-deps","api","python","tasks.py","migrate"]}],
+    "seed":[{"component":"api","argv":["docker","compose","run","--rm","--no-deps","api","python","tasks.py","seed"]}],
+    "healthcheck":[{"component":"api","argv":["docker","compose","up","-d","--wait","--wait-timeout","60","api"]}],
+    "smoke":[
+      {"component":"smoke","argv":["docker","compose","run","--rm","--no-deps","runner"]},
+      {"component":"smoke","argv":["docker","compose","run","--rm","--no-deps","reporter"]}
+    ]
+  },
+  "parameters":{}, "secret_refs":[],
+  "smoke":{"runner":"smoke","env":"local","suite":"smoke.py"},
+  "output_bindings":{"baseUrl":{"service":"api","port":8080,"scheme":"http","path":"/"}}
+}

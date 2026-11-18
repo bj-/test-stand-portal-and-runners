@@ -4,7 +4,7 @@ set -euo pipefail
 
 workspace='' portal_source='' install_name='' install_port='' create_admin=0 mode=install
 usage() {
-  printf '%s\n' 'Usage: bash installer/install.sh --workspace PATH --portal-source PATH [--name NAME] [--port PORT] [--create-admin] [--check | --dry-run]'
+  printf '%s\n' 'Usage: bash installer/install.sh --workspace PATH --portal-source PATH [--name NAME] [--port PORT] [--create-admin] [--check | --plan | --dry-run]'
 }
 fail() { printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
 while (($#)); do
@@ -18,7 +18,7 @@ while (($#)); do
       shift 2;;
     --create-admin) create_admin=1; shift;;
     --check) [[ $mode == install ]] || fail 'Выберите только один режим'; mode=check; shift;;
-    --dry-run) [[ $mode == install ]] || fail 'Выберите только один режим'; mode=plan; shift;;
+    --plan|--dry-run) [[ $mode == install ]] || fail 'Выберите только один режим'; mode=plan; shift;;
     -h|--help) usage; exit 0;;
     *) fail "Неизвестный аргумент: $1";;
   esac
@@ -59,7 +59,7 @@ if [[ $mode == plan ]]; then
   else
     printf '%s\n' 'При необходимости: sudo apt-get install python3 git ca-certificates curl; официальный Docker apt repo/key; docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; systemctl enable --now docker.' 'При необходимости: добавить текущего пользователя в группу docker; завершить с кодом 20 для перелогина.'
   fi
-  printf '%s\n' 'Затем launcher init, doctor, up; ожидание /api/health; команда user-add admin (выполняется только с --create-admin).'
+  printf '%s\n' 'Затем launcher init, doctor, up; ожидание /api/health; автоматическая admin-init: admin/admin только при пустой базе пользователей, существующие учётные записи сохраняются. Затем agent-init и agent-start: токен host-агента сохраняется, фоновый worker запускается автоматически.'
   rerun
   exit 0
 fi
@@ -76,6 +76,7 @@ pick_python() {
 }
 working_docker() { pick_python && "$python_bin" "$script_dir/probe_docker.py"; }
 if [[ $mode == check ]]; then
+  printf '%s\n' 'При установке после health выполняется автоматическая admin-init; сейчас база пользователей не изменяется и host-агент не запускается (agent-init/agent-start только при установке).'
   missing=0
   if pick_python; then printf 'Python >=3.12: OK\n'; else printf 'Python >=3.12: отсутствует\n'; missing=1; fi
   if command -v git >/dev/null 2>&1; then printf 'Git: OK\n'; else printf 'Git: отсутствует\n'; missing=1; fi
@@ -177,13 +178,6 @@ init_args=(init)
 "$python_bin" "$launcher" --workspace "$workspace" doctor
 "$python_bin" "$launcher" --workspace "$workspace" up
 "$python_bin" "$script_dir/wait_health.py" --workspace "$workspace" --timeout 180
-printf 'Создать администратора: %q %q --workspace %q user-add admin\n' "$python_bin" "$launcher" "$workspace"
-if ((create_admin == 1)); then
-  if [[ -f $workspace/.installer-admin-created ]]; then
-    printf '%s\n' 'Installer уже создал admin; повторное создание пропущено.'
-  elif "$python_bin" "$launcher" --workspace "$workspace" user-add admin; then
-    (umask 077; printf 'admin\n' > "$workspace/.installer-admin-created")
-  else
-    printf '%s\n' 'Портал запущен; admin не создан. Повторите показанную команду (если admin уже существует, используйте его).'
-  fi
-fi
+"$python_bin" "$launcher" --workspace "$workspace" admin-init
+"$python_bin" "$launcher" --workspace "$workspace" agent-init
+"$python_bin" "$launcher" --workspace "$workspace" agent-start

@@ -1,8 +1,11 @@
 # Локальный портал
 
-Сейчас launcher поднимает только портал с PostgreSQL. Агент, Docker socket,
-исполнитель тестов и сам тестовый стенд пока не подключаются. Пустой портал
-не сможет запускать тесты, пока эти компоненты не будут настроены отдельно.
+Launcher поднимает портал с PostgreSQL и управляет фоновым `stands.worker` на хосте.
+Installer сам выполняет `agent-init`/`agent-start`; ключи и настройки находятся
+в workspace/agent. Docker socket не монтируется в портал. Каталоги приложений
+первоначально пусты; настройка — `test-portal/docs/local-stand-agent.md`.
+Команды `agent-status`, `agent-stop`, `agent-start` используют тот же `--workspace`.
+Системная служба автозапуска ОС пока не устанавливается.
 
 Launcher использует `docker-compose.yaml` из отдельного локального клона
 `test-portal` и Python 3.12+ без дополнительных Python-пакетов. Исходники портала
@@ -24,7 +27,7 @@ Windows PowerShell:
 python local/portal_local.py --workspace "C:/portal work/demo" --portal-source "C:/git/test-portal" init --name demo --port 8080
 python local/portal_local.py --workspace "C:/portal work/demo" doctor
 python local/portal_local.py --workspace "C:/portal work/demo" up
-python local/portal_local.py --workspace "C:/portal work/demo" user-add admin
+python local/portal_local.py --workspace "C:/portal work/demo" admin-init
 ```
 
 Ubuntu и macOS:
@@ -33,10 +36,13 @@ Ubuntu и macOS:
 python3 local/portal_local.py --workspace "$HOME/portal work/demo" --portal-source "$HOME/git/test-portal" init --name demo --port 8080
 python3 local/portal_local.py --workspace "$HOME/portal work/demo" doctor
 python3 local/portal_local.py --workspace "$HOME/portal work/demo" up
-python3 local/portal_local.py --workspace "$HOME/portal work/demo" user-add admin
+python3 local/portal_local.py --workspace "$HOME/portal work/demo" admin-init
 ```
 
-Откройте <http://127.0.0.1:8080>. `user-add` вызывает штатный интерактивный CLI:
+Откройте <http://127.0.0.1:8080>. `admin-init` создаёт `admin/admin` без терминального
+ввода только при пустой таблице пользователей. Повтор сохраняет существующие учётки.
+После входа можно сменить пароль или оставить как есть; смена доступна позже в профиле.
+Для других пользователей `user-add` вызывает штатный интерактивный CLI:
 пароль пользователя вводится дважды, минимум 10 символов. По умолчанию создаётся
 администратор; доступны `--role admin|tester|developer|viewer` и `--display-name`.
 Для интерактивного ввода используйте обычный терминал. Docker Desktop может
@@ -52,6 +58,7 @@ python3 local/portal_local.py --workspace "$HOME/portal work/demo" user-add admi
 | `status` | Показать контейнеры, включая остановленные |
 | `logs --tail 100 --follow` | Смотреть журнал контейнеров |
 | `user-add LOGIN` | Создать учётную запись штатным CLI |
+| `admin-init` | Создать admin/admin в пустой базе без TTY; существующие учётки не менять |
 | `sync` / `sync --project CODE` | Индексировать настроенные результаты штатным CLI |
 
 `init` работает без Docker и сохраняет существующие настройки при повторе.
@@ -90,9 +97,9 @@ Windows named pipe. Удалённые SSH/TCP contexts отклоняются �
 launcher сам не переключает. Для установки отсутствующих зависимостей используйте
 [установщик вашей ОС](../installer/README.md).
 
-Это локальная установка портала. Агент, Docker socket, тестовый стенд и демонстрационные
-прогоны пока не подключаются; пустой `sync` не создаёт тесты или результаты.
-Проекты и результаты затем настраиваются отдельно для этой установки.
+Это локальная установка портала и host-worker. Docker socket не передаётся порталу;
+пустой `sync` не создаёт тесты или результаты. Проекты, каталоги и шаблоны
+настраиваются отдельно для этой установки.
 `down` не удаляет данные; команд сброса или удаления workspace здесь нет.
 
 Проверка launcher без Docker:

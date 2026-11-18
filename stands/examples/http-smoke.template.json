@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "http-smoke",
+  "version": "1.0.0",
+  "components": [
+    {"id": "api", "repository": "service-src", "default_ref": "main", "dependencies": []},
+    {"id": "smoke", "repository": "runner-src", "default_ref": "main", "dependencies": ["api"]}
+  ],
+  "compose": {"component": "api", "path": "compose.yaml", "required_services": ["api"]},
+  "profiles": {
+    "laptop": {"services": ["api"], "resources": {"cpus": 1, "memory_mb": 512}},
+    "server": {"services": ["api"], "resources": {"cpus": 2, "memory_mb": 1024}}
+  },
+  "lifecycle": {
+    "build": [{"component": "api", "argv": ["docker", "compose", "build"]}],
+    "deploy": [{"component": "api", "argv": ["docker", "compose", "up", "-d"]}],
+    "migrate": [],
+    "seed": [],
+    "healthcheck": [{"component": "api", "argv": ["docker", "compose", "ps", "--format", "json"]}],
+    "smoke": [{"component": "smoke", "argv": ["python", "runner.py"]}]
+  },
+  "parameters": {
+    "timeout_seconds": {"type": "integer", "default": 30},
+    "verbose": {"type": "boolean", "default": false}
+  },
+  "secret_refs": [],
+  "smoke": {"runner": "smoke", "env": "local", "suite": "suites/smoke.yaml"},
+  "output_bindings": {
+    "baseUrl": {"service": "api", "port": 8080, "scheme": "http", "path": "/"}
+  }
+}

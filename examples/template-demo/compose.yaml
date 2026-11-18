@@ -1,0 +1,38 @@
+services:
+  api:
+    build: .
+    ports:
+      - target: 8080
+        host_ip: 127.0.0.1
+        published: "0"
+        protocol: tcp
+    volumes:
+      - data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  runner:
+    build:
+      context: ${CONTEXT_SMOKE:?Executor must set CONTEXT_SMOKE}
+    profiles: [test]
+    environment:
+      BASE_URL: http://api:8080
+      OUTPUT_DIR: /results
+    volumes:
+      - type: bind
+        source: ${OUTPUT_DIR:?Executor must set OUTPUT_DIR}
+        target: /results
+    command: ["python", "smoke.py"]
+  reporter:
+    build:
+      context: ${CONTEXT_SMOKE:?Executor must set CONTEXT_SMOKE}
+      dockerfile: Dockerfile.report
+    profiles: [test]
+    volumes:
+      - type: bind
+        source: ${OUTPUT_DIR:?Executor must set OUTPUT_DIR}
+        target: /results
+volumes:
+  data: {}

@@ -144,6 +144,22 @@ class LocalInstallationTests(unittest.TestCase):
         self.assertEqual(env["POSTGRES_PASSWORD"], local.env_password(self.workspace))
         self.assertNotIn("COMPOSE_PROJECT_NAME", env)
 
+    def test_admin_init_is_noninteractive_and_propagates_failure(self):
+        self.init()
+        marker = self.workspace / ".installer-admin-created"
+        marker.write_text("legacy marker", encoding="utf-8")
+        for status in (0, 17):
+            with self.subTest(status=status), patch.object(local, "check_docker", return_value="docker"), \
+                    patch.object(local, "run_compose", return_value=status) as run, \
+                    patch.object(local, "run_interactive") as interactive:
+                self.assertEqual(self.invoke("admin-init")[0], status)
+                self.assertEqual(run.call_args.args[0][-8:],
+                                 ["exec", "-T", "portal", "python", "-m", "portal.cli", "user", "ensure-default-admin"])
+                self.assertEqual(run.call_args.kwargs, {"noninteractive": True,
+                    "redactions": (local.agent_local.token(self.workspace),)})
+                interactive.assert_not_called()
+        self.assertEqual(marker.read_text(encoding="utf-8"), "legacy marker")
+
     def test_name_and_port_validation(self):
         for name in ("", "../other", "-oops", "UPPER", "a" * 41, "name with spaces"):
             with self.subTest(name=name), self.assertRaises(Exception):
@@ -225,6 +241,22 @@ class LocalInstallationTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "prompt: [REDACTED]\nГотово")
         self.assertIsNone(popen.call_args.kwargs["stdin"])
         self.assertNotIn("shell", popen.call_args.kwargs)
+
+    def test_noninteractive_process_closes_stdin_and_redacts_failure_output(self):
+        class Output:
+            def __init__(self):
+                self.chunks = iter([b"failure: database-secret\n", b""])
+            def read1(self, _size): return next(self.chunks)
+        class Process:
+            stdout = Output()
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def wait(self): return 23
+        output = io.StringIO()
+        with patch.object(local.subprocess, "Popen", return_value=Process()) as popen, contextlib.redirect_stdout(output):
+            self.assertEqual(local.run_compose(["docker", "compose"], {}, "database-secret", noninteractive=True), 23)
+        self.assertEqual(output.getvalue(), "failure: [REDACTED]\n")
+        self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
 
     def test_user_add_preserves_terminal_and_rejects_a_pipe(self):
         with patch.object(local.sys, "stdin") as stdin, patch.object(local.sys, "stdout") as stdout, \

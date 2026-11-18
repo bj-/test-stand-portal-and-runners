@@ -1,0 +1,5 @@
+FROM node:22-alpine
+RUN npm install --global allure@3.33.0
+WORKDIR /report
+COPY allurerc.json report.mjs ./
+CMD ["node", "report.mjs"]

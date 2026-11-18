@@ -106,13 +106,14 @@ try {
     if ($Plan) {
         Write-Host 'План: Python >=3.12 и Git (winget Python.Python.3.12, Git.Git при отсутствии); WSL; Docker Desktop (Docker.DockerDesktop при отсутствии).'
         Write-Host 'Первый запуск Docker и лицензионное соглашение завершаете самостоятельно. При необходимости перезагрузки выход 20, без автоматического reboot.'
-        Write-Host 'Затем init, doctor, up через launcher; ожидание /api/health; команда user-add admin (выполняется только с -CreateAdmin).'
+        Write-Host 'Затем init, doctor, up через launcher; ожидание /api/health; автоматическая admin-init: admin/admin только при пустой базе пользователей, существующие учётные записи сохраняются. Затем agent-init и agent-start: токен host-агента сохраняется, фоновый worker запускается автоматически.'
         Show-Rerun
         exit 0
     }
     Refresh-ProcessPath
     $pythonFound = Find-Python
     if ($CheckOnly) {
+        Write-Host 'При установке после health выполняется автоматическая admin-init; сейчас база пользователей не изменяется и host-агент не запускается (agent-init/agent-start только при установке).'
         $missing = $false
         if ($pythonFound) { Write-Host 'Python >=3.12: OK' } else { Write-Host 'Python >=3.12: отсутствует'; $missing = $true }
         if (Get-Command git.exe -ErrorAction SilentlyContinue) { Write-Host 'Git: OK' } else { Write-Host 'Git: отсутствует'; $missing = $true }
@@ -148,19 +149,9 @@ try {
     Invoke-Python @($Launcher, '--workspace', $Workspace, 'doctor')
     Invoke-Python @($Launcher, '--workspace', $Workspace, 'up')
     Invoke-Python @((Join-Path $PSScriptRoot 'wait_health.py'), '--workspace', $Workspace, '--timeout', '180')
-    $prefixText = ($script:Python.Prefix -join ' ')
-    $adminCommand = "& $(Quote-PowerShell $script:Python.Executable) $prefixText $(Quote-PowerShell $Launcher) --workspace $(Quote-PowerShell $Workspace) user-add admin"
-    Write-Host "Создать администратора: $adminCommand"
-    if ($CreateAdmin) {
-        $sentinel = Join-Path $Workspace '.installer-admin-created'
-        if (Test-Path -LiteralPath $sentinel -PathType Leaf) { Write-Host 'Installer уже создал admin; повторное создание пропущено.' }
-        else {
-            try {
-                Invoke-Python @($Launcher, '--workspace', $Workspace, 'user-add', 'admin')
-                'admin' | Set-Content -LiteralPath $sentinel -Encoding ascii
-            } catch { Write-Host "Портал запущен; admin не создан. Повторите: $adminCommand (если admin уже существует, используйте его)." }
-        }
-    }
+    Invoke-Python @($Launcher, '--workspace', $Workspace, 'admin-init')
+    Invoke-Python @($Launcher, '--workspace', $Workspace, 'agent-init')
+    Invoke-Python @($Launcher, '--workspace', $Workspace, 'agent-start')
     exit 0
 } catch {
     Write-Host "Ошибка: $($_.Exception.Message)"

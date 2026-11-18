@@ -14,6 +14,8 @@ import shutil
 import subprocess
 import sys
 
+import agent_local
+
 REPO = Path(__file__).resolve().parents[1]
 MARKER = ".portal-local.json"
 ENV_KEYS = {"POSTGRES_PASSWORD", "BASE_REGISTRY", "PORTAL_COOKIE_SECURE"}
@@ -113,6 +115,7 @@ def init_workspace(workspace: Path, name: str | None, port: int | None, source: 
                 raise LocalError("workspace привязан к другому portal source; повтор init сохраняет настройки")
             if name is not None and name != data["name"] or port is not None and port != data["port"]:
                 raise LocalError("workspace уже настроен; повтор init сохраняет имя и порт")
+            agent_local.ensure_files(workspace, data)
             return data
         if any(workspace.iterdir()):
             raise LocalError("workspace не пуст и не принадлежит launcher; выберите новый каталог")
@@ -139,6 +142,7 @@ def init_workspace(workspace: Path, name: str | None, port: int | None, source: 
     with (workspace / MARKER).open("x", encoding="utf-8") as stream:
         json.dump(data, stream, ensure_ascii=False, indent=2)
         stream.write("\n")
+    agent_local.ensure_files(workspace, data)
     return data
 
 
@@ -191,6 +195,8 @@ def compose_command(docker: str, workspace: Path, data: dict, args: argparse.Nam
     command = [docker, "compose", "--project-name", data["project_name"],
                "--project-directory", str(source), "--env-file", str(workspace / ".env"),
                "--file", str(source / "docker-compose.yaml")]
+    if (workspace / "agent.compose.json").exists():
+        command.extend(["--file", str(owned_path(workspace, "agent.compose.json"))])
     actions = {"up": ["up", "-d", "--build"], "down": ["down"],
                "status": ["ps", "--all"], "logs": ["logs", "--tail", str(getattr(args, "tail", 100))]}
     if args.command in actions:
@@ -199,11 +205,17 @@ def compose_command(docker: str, workspace: Path, data: dict, args: argparse.Nam
             command.append("--follow")
     else:
         command.extend(["exec"])
-        if args.command == "sync":
+        if args.command in ("sync", "admin-init", "agent-init"):
             command.append("-T")
         command.extend(["portal", "python", "-m", "portal.cli"])
         if args.command == "user-add":
             command.extend(["user", "add", args.login, "--role", args.role, f"--name={args.display_name}"])
+        elif args.command == "admin-init":
+            command.extend(["user", "ensure-default-admin"])
+        elif args.command == "agent-init":
+            config = agent_local.configuration(workspace)
+            command.extend(["stand-agent", "provision", "--name", data["project_name"] + "-agent",
+                            "--host", config["host_id"], "--token-file", "/config/local-agent/token"])
         else:
             command.append("sync")
             if args.project:
@@ -211,30 +223,41 @@ def compose_command(docker: str, workspace: Path, data: dict, args: argparse.Nam
     return command
 
 
-def run_compose(command: list[str], env: dict[str, str], password: str) -> int:
-    # Keep stdin connected for the existing interactive password prompt. Stream
-    # output while retaining a tail so a secret split across reads is redacted.
+def redact_prefix(pending: bytes, secret_values: list[bytes], *, final: bool = False) -> tuple[bytes, bytes]:
+    """Keep incomplete secret prefixes, including prefixes of a longer secret."""
+    output = bytearray()
+    index = 0
+    while index < len(pending):
+        remaining_size = len(pending) - index
+        if not final and any(remaining_size < len(secret) and secret.startswith(pending[index:])
+                             for secret in secret_values):
+            break
+        match = next((secret for secret in secret_values if pending.startswith(secret, index)), None)
+        if match is not None:
+            output.extend(b"[REDACTED]")
+            index += len(match)
+        else:
+            output.append(pending[index])
+            index += 1
+    return bytes(output), pending[index:]
+
+
+def run_compose(command: list[str], env: dict[str, str], password: str, *, noninteractive: bool = False,
+                redactions: tuple[str, ...] = ()) -> int:
+    # Stream output while retaining a tail so a secret split across reads is redacted.
     try:
-        with subprocess.Popen(command, env=env, stdin=None, stdout=subprocess.PIPE,
+        with subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL if noninteractive else None, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT) as process:
             pending = b""
-            secret = password.encode("utf-8")
+            secret_values = sorted({value.encode("utf-8") for value in (password, *redactions) if value}, key=len, reverse=True)
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             while chunk := process.stdout.read1(4096):
                 pending += chunk
-                pending = pending.replace(secret, b"[REDACTED]")
-                # Retain only a suffix that could begin the secret, so ordinary
-                # interactive prompts are forwarded immediately.
-                for size in range(min(len(secret) - 1, len(pending)), 0, -1):
-                    if pending.endswith(secret[:size]):
-                        cut = len(pending) - size
-                        break
-                else:
-                    cut = len(pending)
-                sys.stdout.write(decoder.decode(pending[:cut]))
+                forwarded, pending = redact_prefix(pending, secret_values)
+                sys.stdout.write(decoder.decode(forwarded))
                 sys.stdout.flush()
-                pending = pending[cut:]
-            sys.stdout.write(decoder.decode(pending.replace(secret, b"[REDACTED]"), final=True))
+            forwarded, _ = redact_prefix(pending, secret_values, final=True)
+            sys.stdout.write(decoder.decode(forwarded, final=True))
             return process.wait()
     except OSError:
         raise LocalError("не удалось запустить Docker; проверьте установку и PATH") from None
@@ -263,6 +286,12 @@ def parser() -> argparse.ArgumentParser:
                             ("up", "собрать и запустить портал"), ("down", "остановить, сохранив данные"),
                             ("status", "состояние контейнеров")):
         commands.add_parser(name, help=help_text)
+    commands.add_parser("admin-init", help="создать admin/admin только в пустой базе пользователей")
+    commands.add_parser("agent-init", help="зарегистрировать токен host-агента, сохранив существующий")
+    commands.add_parser("agent-status", help="показать состояние host-агента")
+    for action, default in (("agent-start", 15), ("agent-stop", 30)):
+        agent = commands.add_parser(action, help="запустить/остановить host-агент без системной службы")
+        agent.add_argument("--timeout", type=float, default=default, help="срок подтверждения в секундах")
     logs = commands.add_parser("logs", help="журнал контейнеров (секрет БД скрывается)")
     logs.add_argument("--follow", action="store_true")
     logs.add_argument("--tail", type=int, choices=range(1, 10001), default=100, metavar="1..10000")
@@ -292,6 +321,24 @@ def main(argv: list[str] | None = None) -> int:
         data = load_workspace(workspace)
         if args.portal_source and str(portal_source_path(args.portal_source)) != data["portal_source"]:
             raise LocalError("--portal-source не совпадает с исходниками, записанными в marker workspace")
+        if args.command in ("agent-start", "agent-stop"):
+            if not 0 < args.timeout <= 900:
+                raise LocalError("timeout агента должен быть больше 0 и не больше 900 секунд")
+            if args.command == "agent-start":
+                agent_local.ensure_files(workspace, data)
+                print(agent_local.start(workspace, timeout=args.timeout))
+            else:
+                print(agent_local.stop(workspace, timeout=args.timeout))
+            return 0
+        if args.command == "agent-status":
+            print(agent_local.describe(workspace))
+            return 0
+        if args.command in ("up", "agent-init"):
+            agent_local.ensure_files(workspace, data)
+        if args.command == "down":
+            print(agent_local.stop(workspace))
+        if args.command == "status":
+            print(agent_local.describe(workspace))
         env = docker_environment(workspace, data)
         docker = check_docker(env)
         if args.command == "doctor":
@@ -300,10 +347,12 @@ def main(argv: list[str] | None = None) -> int:
         command = compose_command(docker, workspace, data, args)
         if args.command == "user-add":
             return run_interactive(command, env)
-        return run_compose(command, env, env_password(workspace))
-    except (LocalError, OSError, UnicodeError) as error:
+        redactions = (agent_local.token(workspace),) if (workspace / "agent/token").exists() else ()
+        return run_compose(command, env, env_password(workspace),
+                           noninteractive=args.command in ("admin-init", "agent-init"), redactions=redactions)
+    except (LocalError, agent_local.AgentError, OSError, UnicodeError) as error:
         # OS error filenames may contain installation details; never dump .env.
-        message = str(error) if isinstance(error, LocalError) else "не удалось прочитать или создать файлы workspace; проверьте путь и права"
+        message = str(error) if isinstance(error, (LocalError, agent_local.AgentError)) else "не удалось прочитать или создать файлы workspace; проверьте путь и права"
         print(f"Ошибка: {message}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
