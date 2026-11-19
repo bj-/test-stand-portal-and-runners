@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import hashlib
+from ipaddress import ip_address
 import json
 import math
 import os
@@ -25,6 +26,15 @@ class LeaseLost(stand.StandError):
     pass
 
 
+def is_loopback(hostname):
+    if hostname == 'localhost':
+        return True
+    try:
+        return ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 def private_path(value, label, *, directory=False):
     path = Path(stand.string(value, label))
     if not path.is_absolute():
@@ -39,13 +49,13 @@ def private_path(value, label, *, directory=False):
 
 def validate_config(value):
     stand.obj(value, ('schema_version', 'portal_url', 'token_file', 'host_id', 'work_root', 'catalogs'),
-              ('fetch', 'poll_seconds', 'timeout'), label='worker config')
+              ('fetch', 'poll_seconds', 'timeout', 'ref_source', 'publish_ip'), label='worker config')
     stand.version(value['schema_version'], 'worker config')
     config = dict(value)
     url = urllib.parse.urlsplit(stand.string(config['portal_url'], 'portal_url'))
     if (url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password
             or url.query or url.fragment or url.path not in ('', '/')
-            or (url.scheme == 'http' and url.hostname not in ('127.0.0.1', 'localhost', '::1'))):
+            or (url.scheme == 'http' and not is_loopback(url.hostname))):
         stand.fail('portal_url: HTTPS or local loopback HTTP origin required')
     try:
         url.port
@@ -80,6 +90,10 @@ def validate_config(value):
     config.setdefault('fetch', False)
     if type(config['fetch']) is not bool:
         stand.fail('fetch: boolean required')
+    config.setdefault('ref_source', 'origin' if config['fetch'] else 'local')
+    if config['ref_source'] not in ('local', 'origin') or (config['fetch'] and config['ref_source'] != 'origin'):
+        stand.fail('ref_source: local or origin required; fetch requires origin')
+    config['publish_ip'] = runtime.publish_address(config.get('publish_ip', '127.0.0.1'))
     for key, default in (('poll_seconds', 2), ('timeout', 900)):
         config.setdefault(key, default)
         number = config[key]
@@ -168,8 +182,8 @@ def fetched_ref(path, requested):
         choices = ['refs/remotes/origin-tags/' + requested[len('refs/tags/'):]]
     else:
         choices = ['refs/remotes/origin/' + requested, 'refs/remotes/origin-tags/' + requested]
-    found = stand.git(path, 'for-each-ref', '--format=%(refname)', *choices).splitlines()
-    exact = [ref for ref in found if ref in choices]
+    found = stand.git(path, 'for-each-ref', '--format=%(refname)%09%(symref)', *choices).splitlines()
+    exact = [ref for ref, _, target in (entry.partition('\t') for entry in found) if ref in choices and not target]
     if len(exact) != 1:
         stand.fail('worker: origin ref missing or ambiguous; no stale fallback')
     sha = stand.git(path, 'rev-parse', '--verify', '--end-of-options', exact[0] + '^{commit}')
@@ -277,13 +291,16 @@ class Worker:
 
     def prepare(self, spec, workspace):
         stand.obj(spec, ('schema_version', 'stand', 'project', 'template', 'template_sha256', 'request', 'target_host',
-                        'environments', 'ports', 'lock', 'parent_job_id'), ('snapshot',), label='stand job spec')
+                        'environments', 'ports', 'lock', 'parent_job_id'), ('snapshot', 'publish_ip'), label='stand job spec')
         stand.version(spec['schema_version'], 'stand job spec')
         if type(spec['lock']) is not bool or not isinstance(spec['environments'], list):
             stand.fail('worker: invalid stand metadata')
         stand.strings(spec['environments'], 'stand environments')
         if spec['target_host'] != self.config['host_id']:
             stand.fail('worker: job targets another host')
+        publish_ip = self.config.get('publish_ip', '127.0.0.1')
+        if spec.get('publish_ip', '127.0.0.1') != publish_ip:
+            stand.fail('worker: job publication address differs from the host configuration')
         template = stand.validate_template(spec['template'])
         if stand.template_hash(template) != spec['template_sha256']:
             stand.fail('worker: frozen template hash mismatch')
@@ -295,6 +312,8 @@ class Worker:
         selected, parameters = stand.validate_request(template, spec['request'], repositories)
         identity = {'stand': spec['stand'], 'project': spec['project'], 'template_sha256': spec['template_sha256'],
                     'profile': spec['request']['profile'], 'ports': spec['ports']}
+        if publish_ip != '127.0.0.1':
+            identity['publish_ip'] = publish_ip
         metadata = workspace / '.worker-identity.json'
         retry = 'snapshot' in spec
         if retry:
@@ -322,7 +341,8 @@ class Worker:
             for component in selected:
                 self.check()
                 path = repositories[component['repository']]['path']
-                resolver = fetched_ref if self.config['fetch'] else stand.resolve_ref
+                ref_source = self.config.get('ref_source', 'origin' if self.config['fetch'] else 'local')
+                resolver = fetched_ref if ref_source == 'origin' else stand.resolve_ref
                 component['sha'] = resolver(path, component['requested_ref'])
             snapshot = {'schema_version': 1, 'template_sha256': spec['template_sha256'], 'template': template,
                         'components': selected, 'profile': spec['request']['profile'], 'parameters': parameters,
@@ -366,7 +386,8 @@ class Worker:
                 self.logs(workspace)
                 self.progress(record)
             state = runtime.run(workspace, retry=retry, timeout=self.config['timeout'], ports=spec['ports'],
-                                progress=progress, cancel=self.checkpoint)
+                                progress=progress, cancel=self.checkpoint,
+                                publish_ip=self.config.get('publish_ip', '127.0.0.1'))
             self.check()
             self.logs(workspace)
             self.upload_artifacts(workspace, state, required=True)

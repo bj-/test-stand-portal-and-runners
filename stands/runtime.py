@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import copy
 from datetime import datetime, timezone
 import hashlib
+from ipaddress import IPv4Address, IPv4Network
 import json
 import math
 import os
@@ -17,6 +18,19 @@ import time
 import uuid
 
 from . import stand
+
+
+PUBLISH_NETWORKS = tuple(map(IPv4Network, ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")))
+
+
+def publish_address(value):
+    try:
+        address = IPv4Address(stand.string(value, "publish_ip"))
+    except ValueError:
+        stand.fail("runtime: publish_ip must be a private or loopback IPv4 address")
+    if not any(address in network for network in PUBLISH_NETWORKS):
+        stand.fail("runtime: publish_ip must be a private or loopback IPv4 address")
+    return str(address)
 
 
 def now():
@@ -243,7 +257,7 @@ def prefix(root, compose_path, project, override=None):
     return argv
 
 
-def validate_config(config, root, selected, project, *, fixed=None):
+def validate_config(config, root, selected, project, *, fixed=None, publish_ip="127.0.0.1"):
     if not isinstance(config, dict) or not isinstance(config.get("services"), dict):
         stand.fail("runtime: Compose config must contain services")
     services = config["services"]
@@ -274,7 +288,7 @@ def validate_config(config, root, selected, project, *, fixed=None):
             if network not in (config.get("networks") or {}):
                 stand.fail("runtime: unknown network")
         for port in service.get("ports") or []:
-            if (not isinstance(port, dict) or port.get("host_ip") != "127.0.0.1"
+            if (not isinstance(port, dict) or port.get("host_ip") != publish_ip
                     or (str(port.get("published", "")) not in ("", "0") if fixed is None else
                         (name, port.get("target"), port.get("protocol", "tcp"), str(port.get("published", ""))) not in fixed)
                     or port.get("mode", "ingress") != "ingress"):
@@ -323,7 +337,7 @@ def reserved_ports(template, ports):
     return groups
 
 
-def effective_config(config, root, selected, project, template, ports, resources):
+def effective_config(config, root, selected, project, template, ports, resources, *, publish_ip="127.0.0.1"):
     # Validate the untrusted, dynamic-only source BEFORE introducing fixed ports.
     validate_config(config, root, selected, project)
     groups = reserved_ports(template, ports)
@@ -331,7 +345,7 @@ def effective_config(config, root, selected, project, template, ports, resources
     expected = {(service, target, "tcp", str(port)) for (service, target), port in groups.items()}
     for name in selected:
         service = value["services"][name]
-        service["ports"] = [{"target": target, "published": str(port), "host_ip": "127.0.0.1", "protocol": "tcp", "mode": "ingress"}
+        service["ports"] = [{"target": target, "published": str(port), "host_ip": publish_ip, "protocol": "tcp", "mode": "ingress"}
                             for (owner, target), port in groups.items() if owner == name]
         service.update(cpus=resources["cpus"], mem_limit=f"{resources['memory_mb']}m")
         service.setdefault("deploy", {}).setdefault("resources", {})["limits"] = {
@@ -340,7 +354,7 @@ def effective_config(config, root, selected, project, template, ports, resources
     for name, service in value["services"].items():
         if name not in selected:
             service.pop("ports", None)
-    validate_config(value, root, selected, project, fixed=expected)
+    validate_config(value, root, selected, project, fixed=expected, publish_ip=publish_ip)
     return value
 
 
@@ -404,20 +418,23 @@ def existing_state(root, snapshot):
     return state
 
 
-def binding_urls(executor, compose, template, log, ports=None):
+def binding_urls(executor, compose, template, log, ports=None, *, publish_ip="127.0.0.1"):
     urls = {}
     for name, binding in template["output_bindings"].items():
         value = executor.call([*compose, "port", binding["service"], str(binding["port"])], log, capture=True).strip()
-        match = re.fullmatch(r"127\.0\.0\.1:([0-9]+)", value)
+        match = re.fullmatch(re.escape(publish_ip) + r":([0-9]+)", value)
         if not match or not 1 <= int(match[1]) <= 65535:
-            stand.fail("runtime: output binding did not resolve to a single dynamic loopback port")
+            stand.fail("runtime: output binding did not resolve to one port on the configured address")
         if ports is not None and int(match[1]) != ports[name]:
             stand.fail("runtime: Docker published port differs from reserved port")
         urls[name] = f"{binding['scheme']}://{value}{binding['path']}"
     return urls
 
 
-def run(workspace, retry=False, timeout=900, *, ports=None, progress=None, cancel=None):
+def run(workspace, retry=False, timeout=900, *, ports=None, progress=None, cancel=None, publish_ip="127.0.0.1"):
+    publish_ip = publish_address(publish_ip)
+    if ports is None and publish_ip != "127.0.0.1":
+        stand.fail("runtime: publishing beyond the default loopback requires reserved ports")
     root, snapshot, compose_path = load(workspace)
     with locked(root):
         state = existing_state(root, snapshot)
@@ -425,6 +442,8 @@ def run(workspace, retry=False, timeout=900, *, ports=None, progress=None, cance
             stand.fail("runtime: workspace has a prior execution; use --retry explicitly (migration/seed repeat)")
         if state is not None and state.get("reserved_ports") != ports:
             stand.fail("runtime: reserved ports differ from persisted execution identity")
+        if state is not None and state.get("publish_ip", "127.0.0.1") != publish_ip:
+            stand.fail("runtime: publication address differs from persisted execution identity")
         if state is None:
             state = {"schema_version": 1, "project_name": "stand-" + uuid.uuid4().hex, "workspace": str(root),
                      "snapshot_sha256": hashlib.sha256(stand.canonical(snapshot)).hexdigest(),
@@ -433,6 +452,8 @@ def run(workspace, retry=False, timeout=900, *, ports=None, progress=None, cance
             if ports is not None:
                 reserved_ports(snapshot["template"], ports)
                 state["reserved_ports"] = dict(ports)
+            if publish_ip != "127.0.0.1":
+                state["publish_ip"] = publish_ip
         attempt_id = uuid.uuid4().hex
         logs = safe_path(root, root / "logs" / attempt_id, exists=False)
         logs.mkdir(parents=True)
@@ -468,7 +489,8 @@ def run(workspace, retry=False, timeout=900, *, ports=None, progress=None, cance
                          for name in selected}})
             compose = prefix(root, compose_path, state["project_name"], override)
             if ports is not None:
-                effective = effective_config(config, root, selected, state["project_name"], template, ports, resources)
+                effective = effective_config(config, root, selected, state["project_name"], template, ports, resources,
+                                             publish_ip=publish_ip)
                 effective_path = safe_path(root, root / "runtime.effective.json", exists=False)
                 atomic_json(effective_path, effective)
                 state["effective_sha256"] = hashlib.sha256(stand.canonical(effective)).hexdigest()
@@ -485,8 +507,9 @@ def run(workspace, retry=False, timeout=900, *, ports=None, progress=None, cance
                 for argv in commands[stage]:
                     executor.call([*compose, *argv], logs / (stage + ".log"))
                 if stage == "deploy":
-                    bindings = binding_urls(executor, compose, template, logs / "deploy.log", ports)
+                    bindings = binding_urls(executor, compose, template, logs / "deploy.log", ports, publish_ip=publish_ip)
                     attempt["output_bindings"] = state["output_bindings"] = bindings
+                    atomic_json(safe_path(root, output_dir / "output-bindings.json", exists=False), bindings)
                     executor.env.update(bindings)
                     if "baseUrl" in bindings:
                         executor.env["BASE_URL"] = bindings["baseUrl"]
@@ -546,6 +569,7 @@ def stop(workspace, timeout=900):
             executor = Executor(root, env, timeout)
             executor.docker_check(log)
             fixed = None
+            publish_ip = publish_address(state.get("publish_ip", "127.0.0.1"))
             if "reserved_ports" in state:
                 groups = reserved_ports(snapshot["template"], state["reserved_ports"])
                 fixed = {(service, target, "tcp", str(port)) for (service, target), port in groups.items()}
@@ -553,13 +577,14 @@ def stop(workspace, timeout=900):
                 effective = stand.read_json(effective_path)
                 if hashlib.sha256(stand.canonical(effective)).hexdigest() != state.get("effective_sha256"):
                     stand.fail("runtime: changed effective config identity")
-                validate_config(effective, root, snapshot["template"]["profiles"][snapshot["profile"]]["services"], state["project_name"], fixed=fixed)
+                validate_config(effective, root, snapshot["template"]["profiles"][snapshot["profile"]]["services"],
+                                state["project_name"], fixed=fixed, publish_ip=publish_ip)
                 compose = prefix(root, effective_path, state["project_name"])
             else:
                 compose = prefix(root, compose_path, state["project_name"], override)
             config = json_output(executor.call([*compose, "config", "--format", "json", "--no-env-resolution"], log, capture=True), "Compose config")
             selected = snapshot["template"]["profiles"][snapshot["profile"]]["services"]
-            validate_config(config, root, selected, state["project_name"], fixed=fixed)
+            validate_config(config, root, selected, state["project_name"], fixed=fixed, publish_ip=publish_ip)
             executor.call([*compose, "stop", *selected], log)
             record.update(status="success", finished_at=now())
             state["status"] = "stopped"

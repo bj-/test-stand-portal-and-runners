@@ -133,6 +133,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(state["images"][0]["repo_digests"])
         self.assertEqual(state["sources"][0]["sha"], "a" * 40)
         self.assertTrue((self.root / attempt["output_dir"]).is_dir())
+        self.assertEqual(stand.read_json(self.root / attempt["output_dir"] / "output-bindings.json"),
+                         state["output_bindings"])
         self.assertIn("fake Docker output", (self.root / attempt["stages"][0]["log"]).read_text())
         for command, env in zip(self.commands, self.envs):
             self.assertNotIn("SECRET_VALUE", env)
@@ -348,6 +350,21 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(stand.StandError, "differs"):
             runtime.binding_urls(executor, ["docker", "compose", "--project-name", "project"],
                                  self.template, self.root / 'ports.log', {"baseUrl": 24001, "alias": 24002})
+
+    def test_opt_in_private_publication_preserves_dynamic_source_restriction(self):
+        config = {"services": {"api": {"ports": [
+            {"target": 8080, "host_ip": "127.0.0.1", "published": "0"}]}, "runner": {}}}
+        args = (config, self.root, ["api", "runner"], "project", self.template, {"baseUrl": 24567},
+                {"cpus": 2, "memory_mb": 256})
+        address = runtime.publish_address("10.20.30.40")
+        effective = runtime.effective_config(*args, publish_ip=address)
+        self.assertEqual(effective["services"]["api"]["ports"][0]["host_ip"], address)
+        config["services"]["api"]["ports"][0]["host_ip"] = address
+        with self.assertRaisesRegex(stand.StandError, "dynamic"):
+            runtime.effective_config(*args, publish_ip=address)
+        for invalid in ("0.0.0.0", "8.8.8.8", "::1", "169.254.0.1"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(stand.StandError, "private or loopback"):
+                runtime.publish_address(invalid)
 
     def test_fixed_run_retry_and_stop_share_persisted_effective_identity(self):
         ports = {'baseUrl': 49123}
