@@ -366,6 +366,18 @@ class RuntimeTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaisesRegex(stand.StandError, "private or loopback"):
                 runtime.publish_address(invalid)
 
+    @unittest.skipUnless(os.name == "nt", "Windows Compose uses child plugins")
+    def test_managed_cancel_terminates_the_windows_cli_and_plugins(self):
+        process = mock.Mock(pid=4321)
+        process.poll.side_effect = [None, 1]
+        with mock.patch.object(runtime.subprocess, "run") as taskkill:
+            runtime.terminate_command(process)
+        args = taskkill.call_args.args[0]
+        self.assertEqual(Path(args[0]).name, "taskkill.exe")
+        self.assertEqual(args[1:], ["/PID", "4321", "/T", "/F"])
+        process.terminate.assert_not_called()
+        process.wait.assert_called_once_with(timeout=3)
+
     def test_fixed_run_retry_and_stop_share_persisted_effective_identity(self):
         ports = {'baseUrl': 49123}
         state = runtime.run(self.root, ports=ports)

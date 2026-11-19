@@ -157,6 +157,28 @@ class Cancelled(stand.StandError):
     """The owner requested cancellation; containers and data are retained."""
 
 
+def terminate_command(process):
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        # docker.exe starts Compose and Buildx as plugins. Stopping only the
+        # CLI can leave an in-flight BuildKit operation shared by the next build.
+        taskkill = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe"
+        try:
+            subprocess.run([str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=3)
+
+
 class Executor:
     def __init__(self, root, env, timeout, cancel=None):
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
@@ -193,13 +215,7 @@ class Executor:
                                 time.sleep(0.1)
                             self.checkpoint()
                         except BaseException:
-                            if process.poll() is None:
-                                process.terminate()
-                                try:
-                                    process.wait(timeout=3)
-                                except subprocess.TimeoutExpired:
-                                    process.kill()
-                                    process.wait(timeout=3)
+                            terminate_command(process)
                             raise
                         output.seek(0)
                         result = subprocess.CompletedProcess(argv, process.returncode, output.read() if capture else "")
