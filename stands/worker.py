@@ -311,7 +311,7 @@ class Worker:
         repositories = stand.validate_catalog(catalog)
         selected, parameters = stand.validate_request(template, spec['request'], repositories)
         identity = {'stand': spec['stand'], 'project': spec['project'], 'template_sha256': spec['template_sha256'],
-                    'profile': spec['request']['profile'], 'ports': spec['ports']}
+                    'profile': spec['request']['profile'], 'ports': spec['ports'], 'target_host': self.config['host_id']}
         if publish_ip != '127.0.0.1':
             identity['publish_ip'] = publish_ip
         metadata = workspace / '.worker-identity.json'
@@ -325,7 +325,9 @@ class Worker:
                     or snapshot['parameters'] != parameters or actual != expected):
                 stand.fail('worker: retry snapshot differs from frozen request')
             if workspace.exists():
-                if not metadata.exists() or stand.read_json(metadata) != identity or stand.read_json(workspace / 'snapshot.json') != snapshot:
+                prior = stand.read_json(metadata) if metadata.exists() else {}
+                prior.setdefault('target_host', self.config['host_id'])  # Older owned workspaces predate the host field.
+                if prior != identity or stand.read_json(workspace / 'snapshot.json') != snapshot:
                     stand.fail('worker: retry workspace identity/snapshot mismatch')
                 runtime.load(workspace)
             else:
@@ -358,6 +360,8 @@ class Worker:
         self.current = str(job['id'])
         self.cancelled = False
         self.last_lease = 0
+        if job['kind'] == 'stand-delete':
+            return self.delete_job(job['spec'])
         workspace, state, accepted, started = None, None, False, False
         stages = []
         try:
@@ -417,6 +421,32 @@ class Worker:
             self.active_workspace = None
 
 
+    def delete_job(self, spec):
+        try:
+            stand.obj(spec, ('schema_version', 'stand', 'project', 'target_host', 'lock', 'parent_job_id', 'workspace_required'), label='stand delete spec')
+            stand.version(spec['schema_version'], 'stand delete spec')
+            stand_id = stand.identifier(spec['stand'], 'stand id')
+            if (spec['target_host'] != self.config['host_id'] or spec['lock'] is not True
+                    or spec['parent_job_id'] is not None or type(spec['workspace_required']) is not bool
+                    or not isinstance(spec['project'], str) or not spec['project']):
+                stand.fail('worker: invalid stand deletion ownership/metadata')
+            workspace = runtime.safe_path(self.root, self.root / 'stands' / stand_id, exists=False)
+            self.check()
+            runtime.delete(workspace, stand_id=stand_id, project=spec['project'], target_host=self.config['host_id'],
+                           workspace_required=spec['workspace_required'], timeout=self.config['timeout'], cancel=self.checkpoint)
+            self.check()
+            self.api.request('POST', self.endpoint('delete-finish'), {'status': 'done'})
+            return 0
+        except LeaseLost:
+            raise
+        except (Exception, KeyboardInterrupt) as exc:
+            self.api.request('POST', self.endpoint('delete-finish'), {'status': 'failed', 'message': self.redact(exc)[-2000:]})
+            return 2
+        finally:
+            self.current = None
+            self.active_workspace = None
+
+
     def run(self, once=False):
         with profile_lock(self.root):
             status = self.root / 'status.json'
@@ -425,7 +455,7 @@ class Worker:
             try:
                 while not self.stopped():
                     try:
-                        job = self.api.request('POST', 'claim', {'capabilities': ['stand-template-v1'], 'host_id': self.config['host_id']})
+                        job = self.api.request('POST', 'claim', {'capabilities': ['stand-template-v1', 'stand-template-v1-delete'], 'host_id': self.config['host_id']})
                     except LeaseLost:
                         if once:
                             raise

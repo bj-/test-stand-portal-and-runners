@@ -159,6 +159,39 @@ class WorkerTests(unittest.TestCase):
             component['requested_ref'] = 'main'
             stand.validate_snapshot(snapshot, repositories)
 
+    def delete_spec(self):
+        return dict({key: self.spec[key] for key in ('schema_version', 'stand', 'project', 'target_host', 'lock', 'parent_job_id')},
+                    workspace_required=True)
+
+    def test_delete_job_uses_scoped_runtime_and_dedicated_finish(self):
+        spec = self.delete_spec()
+        with mock.patch.object(runtime, 'delete') as delete:
+            self.assertEqual(self.worker.job({'id': 9, 'kind': 'stand-delete', 'spec': spec}), 0)
+        delete.assert_called_once_with(self.workspace, stand_id='stand-one', project='DEMO', target_host='local',
+                                      workspace_required=True, timeout=900, cancel=self.worker.checkpoint)
+        self.assertEqual(self.api.calls[-1][1:3], ('jobs/9/stand/delete-finish', {'status': 'done'}))
+        self.assertTrue(any(path == 'jobs/9/log' for _, path, _, _ in self.api.calls))
+        self.assertIsNone(self.worker.current)
+
+    def test_delete_wrong_host_or_recovery_metadata_fails_before_runtime(self):
+        for changes in ({'target_host': 'another'}, {'lock': False}, {'parent_job_id': 1}, {'extra': True}, {'workspace_required': 1}):
+            with self.subTest(changes=changes), mock.patch.object(runtime, 'delete') as delete:
+                self.assertEqual(self.worker.job({'id': 9, 'kind': 'stand-delete', 'spec': dict(self.delete_spec(), **changes)}), 2)
+                delete.assert_not_called()
+                self.assertEqual(self.api.calls[-1][2]['status'], 'failed')
+
+    def test_delete_failure_or_cancellation_never_reports_done(self):
+        for error in (stand.StandError('unsafe data'), runtime.Cancelled('cancelled')):
+            with self.subTest(error=error), mock.patch.object(runtime, 'delete', side_effect=error):
+                self.assertEqual(self.worker.job({'id': 9, 'kind': 'stand-delete', 'spec': self.delete_spec()}), 2)
+                self.assertEqual(self.api.calls[-1][2]['status'], 'failed')
+
+    def test_delete_lost_lease_has_no_terminal_callback(self):
+        with mock.patch.object(runtime, 'delete', side_effect=worker.LeaseLost('lost')):
+            with self.assertRaises(worker.LeaseLost):
+                self.worker.job({'id': 9, 'kind': 'stand-delete', 'spec': self.delete_spec()})
+        self.assertFalse(any(path.endswith('/delete-finish') for _, path, _, _ in self.api.calls))
+
     def test_missing_success_allure_is_failed(self):
         def no_report(*args, **kwargs):
             result = self.fake_runtime(*args, **kwargs)
@@ -182,7 +215,7 @@ class WorkerTests(unittest.TestCase):
 
     def test_once_idle_claims_only_capability_host_and_cleans_status(self):
         self.assertEqual(self.worker.run(once=True), 0)
-        self.assertEqual(self.api.calls[0][2], {'capabilities': ['stand-template-v1'], 'host_id': 'local'})
+        self.assertEqual(self.api.calls[0][2], {'capabilities': ['stand-template-v1', 'stand-template-v1-delete'], 'host_id': 'local'})
         self.assertFalse((self.config['work_root'] / 'status.json').exists())
         self.assertTrue((self.config['work_root'] / '.worker.lock').exists())
         with worker.profile_lock(self.config['work_root']):

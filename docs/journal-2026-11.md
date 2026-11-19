@@ -12,3 +12,4 @@
 | 2026-11-18 | Codex | Полныйdeploy.ps1 -Retry успешнообновилрабочийпортал иagent, example build/deploy/migrate/seed/healthcheck/smoke2/2PASS. Readonlyacceptance5PASS: backupvalid, existinguser/credentials/configpreserved, schema0012, newUI/API, boundagentlive, Edgeguest. BackupвнеGit, ключинеизменялись; Windowsstdoutfix опубликован. |
 | 2026-11-19 | Codex | Исполнитель использует origin refs из каталога хоста, поддерживает зарезервированную публикацию на приватном IPv4 и передаёт ссылки последующим стадиям через файл output-bindings.json. |
 | 2026-11-19 | Codex | При отмене сборки на Windows завершается дерево CLI, Compose и Buildx, чтобы следующая попытка не присоединилась к прежней операции BuildKit. |
+| 2026-11-19 | Codex | Portable worker принимает отдельную операцию удаления. Проверяет workspace и принадлежность ресурсов проекта Compose, сохраняет отчёты и данные истории. Шаблон поддерживает подписи ссылок. |

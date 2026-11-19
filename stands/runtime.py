@@ -11,6 +11,8 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -157,7 +159,25 @@ class Cancelled(stand.StandError):
     """The owner requested cancellation; containers and data are retained."""
 
 
-def terminate_command(process):
+def terminate_command(process, *, process_group=False):
+    if os.name != "nt" and process_group:
+        # Managed Compose calls own a session, so plugins cannot outlive an
+        # interrupted deletion and race a subsequent retry on the same stand.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass
+        except ProcessLookupError:
+            pass
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        process.wait(timeout=3)
+        return
     if process.poll() is not None:
         return
     if os.name == "nt":
@@ -206,7 +226,7 @@ class Executor:
                     with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as output:
                         process = subprocess.Popen(argv, cwd=self.root, env=self.env, shell=False,
                             stdin=subprocess.DEVNULL, stdout=output if capture else stream,
-                            stderr=stream, text=True, encoding="utf-8", errors="replace")
+                            stderr=stream, text=True, encoding="utf-8", errors="replace", start_new_session=os.name != "nt")
                         try:
                             while process.poll() is None:
                                 self.checkpoint()
@@ -215,7 +235,7 @@ class Executor:
                                 time.sleep(0.1)
                             self.checkpoint()
                         except BaseException:
-                            terminate_command(process)
+                            terminate_command(process, process_group=os.name != "nt")
                             raise
                         output.seek(0)
                         result = subprocess.CompletedProcess(argv, process.returncode, output.read() if capture else "")
@@ -606,6 +626,170 @@ def stop(workspace, timeout=900):
             state["status"] = "stopped"
             atomic_json(root / "execution.json", state)
             print("stand: stopped; containers/data retained", file=sys.stderr, flush=True)
+            return state
+        except (Exception, KeyboardInterrupt) as exc:
+            record.update(status="failed", finished_at=now(), error=str(exc))
+            atomic_json(root / "execution.json", state)
+            raise
+
+
+def deletion_resources(executor, config, compose, project, log):
+    """Refuse same-name foreign resources before Compose can remove anything."""
+    label = "com.docker.compose.project"
+    ids = executor.call(["docker", "ps", "-aq", "--no-trunc", "--filter", f"label={label}={project}"], log, capture=True).split()
+    containers = json_output(executor.call(["docker", "container", "inspect", *ids], log, capture=True), "container inspect") if ids else []
+    if (not isinstance(containers, list) or len(containers) != len(ids)
+            or {container.get("Id") for container in containers} != set(ids)):
+        stand.fail("runtime: incomplete container ownership inspection")
+    files = [str(Path(compose[index + 1]).resolve()) for index, arg in enumerate(compose[:-1]) if arg == "--file"]
+    directory = str(Path(compose[compose.index("--project-directory") + 1]).resolve())
+    volume_keys = {f"{project}_{key}": key for key in config.get("volumes", {})}
+    used_volumes = set(volume_keys)
+    for container in containers:
+        labels = (container.get("Config") or {}).get("Labels") or {}
+        actual_files = labels.get("com.docker.compose.project.config_files", "").split(",")
+        if (labels.get(label) != project or not labels.get("com.docker.compose.service")
+                or [str(Path(path).resolve()) for path in actual_files] != files
+                or str(Path(labels.get("com.docker.compose.project.working_dir", "")).resolve()) != directory):
+            stand.fail("runtime: container ownership/configuration path mismatch")
+        for mount in container.get("Mounts") or []:
+            if mount.get("Type") == "volume":
+                name = mount.get("Name", "")
+                if name not in volume_keys and not re.fullmatch(r"[a-f0-9]{64}", name):
+                    stand.fail("runtime: container mounts a foreign named volume")
+                used_volumes.add(name)
+    # List first: an absent volume/network is a normal idempotent retry, whereas
+    # an inspect error must never be interpreted as proof that it is absent.
+    names = executor.call(["docker", "volume", "ls", "--format", "{{.Name}}"], log, capture=True).splitlines()
+    for name in sorted(used_volumes.intersection(names)):
+        values = json_output(executor.call(["docker", "volume", "inspect", name], log, capture=True), "volume inspect")
+        if not isinstance(values, list) or len(values) != 1 or values[0].get("Name") != name:
+            stand.fail("runtime: invalid volume ownership inspection")
+        labels = values[0].get("Labels") or {}
+        if name in volume_keys and (labels.get(label) != project or labels.get("com.docker.compose.volume") != volume_keys[name]):
+            stand.fail("runtime: foreign named volume ownership")
+        if name not in volume_keys and ("com.docker.volume.anonymous" not in labels
+                                       or labels.get(label) not in (None, project)):
+            stand.fail("runtime: unverified anonymous volume ownership")
+        users = executor.call(["docker", "ps", "-aq", "--no-trunc", "--filter", "volume=" + name], log, capture=True).split()
+        if not set(users).issubset(ids):
+            stand.fail("runtime: volume is shared with another project")
+    networks = executor.call(["docker", "network", "ls", "--format", "{{.Name}}"], log, capture=True).splitlines()
+    for key in config.get("networks", {}):
+        name = f"{project}_{key}"
+        if name not in networks:
+            continue
+        values = json_output(executor.call(["docker", "network", "inspect", name], log, capture=True), "network inspect")
+        if not isinstance(values, list) or len(values) != 1 or values[0].get("Name") != name:
+            stand.fail("runtime: invalid network ownership inspection")
+        labels = values[0].get("Labels") or {}
+        if labels.get(label) != project or labels.get("com.docker.compose.network") != key:
+            stand.fail("runtime: foreign network ownership")
+        if not set(values[0].get("Containers") or {}).issubset(ids):
+            stand.fail("runtime: network is shared with another project")
+
+
+def deletion_bind_paths(root, config, compose_path):
+    paths = set()
+    preserved = [root / name for name in ("results", "logs")]
+    protected = [root / name for name in (stand.MARKER, "snapshot.json", "execution.json", ".worker-identity.json",
+                                         ".execution.lock", ".runtime.env", "runtime.effective.json", "runtime.override.json")]
+    protected.append(compose_path)
+    for service in config["services"].values():
+        if service.get("build"):
+            context = Path(service["build"]["context"])
+            protected.extend((context, context / service["build"].get("dockerfile", "Dockerfile")))
+    for service in config["services"].values():
+        for mount in service.get("volumes") or []:
+            if mount.get("type") != "bind" or mount.get("read_only"):
+                continue
+            path = safe_path(root, mount["source"], exists=False)
+            if any(stand.contains(keep, path) for keep in preserved):
+                continue  # Build reports remain available after the stand is gone.
+            if path == root or any(stand.contains(path, keep) for keep in preserved + protected):
+                stand.fail("runtime: writable bind overlaps preserved workspace metadata")
+            if path.is_dir():
+                for parent, dirs, files in os.walk(path, followlinks=False):
+                    for name in dirs + files:
+                        safe_path(root, Path(parent) / name)
+            paths.add(path)
+    return sorted(paths, key=lambda path: len(path.parts))
+
+
+def delete(workspace, *, stand_id, project, target_host, workspace_required=True, timeout=900, cancel=None):
+    """Delete only a worker-owned stand's Compose resources and writable bind data.
+
+    Keep snapshots, exported sources, logs and reports for audit/recovery. No image,
+    global Docker prune, external volume or unrelated workspace is removed.
+    """
+    stand.identifier(stand_id, "stand id")
+    stand.identifier(target_host, "target host")
+    if type(workspace_required) is not bool:
+        stand.fail("runtime: workspace_required must be boolean")
+    root = safe_path(Path(workspace).absolute(), workspace, exists=False)
+    if stand.contains(stand.SOURCE_ROOT, root) or stand.contains(root, stand.SOURCE_ROOT):
+        stand.fail("runtime: workspace must be outside tool repository")
+    if not root.exists():
+        if workspace_required:
+            stand.fail("runtime: acknowledged stand workspace is missing; deletion cannot be verified")
+        return {"status": "deleted"}  # Portal can delete a stand before its first build.
+    with locked(root):
+        identity = stand.read_json(safe_path(root, root / ".worker-identity.json"))
+        if (not isinstance(identity, dict) or identity.get("stand") != stand_id or identity.get("project") != project
+                or identity.get("target_host", target_host) != target_host):
+            stand.fail("runtime: stand deletion workspace ownership mismatch")
+        root, snapshot, compose_path = load(root)
+        if (identity.get("template_sha256") != snapshot["template_sha256"] or identity.get("profile") != snapshot["profile"]):
+            stand.fail("runtime: stand deletion snapshot identity mismatch")
+        state = existing_state(root, snapshot)
+        if state is None:
+            # Preparation alone never starts Docker or creates stand data.
+            return {"status": "deleted"}
+        if state.get("reserved_ports") != identity.get("ports"):
+            stand.fail("runtime: stand deletion execution identity mismatch")
+        if state.get("status") == "deleted":
+            return state
+        # Portal executions always persist this canonical configuration before
+        # their first lifecycle command. No config => preflight never deployed.
+        effective_path = safe_path(root, root / "runtime.effective.json", exists=False)
+        if not state.get("effective_sha256"):
+            if any(attempt.get("stages") for attempt in state["attempts"]):
+                stand.fail("runtime: execution has no frozen effective configuration")
+            state.update(status="deleted", deleted_at=now())
+            atomic_json(root / "execution.json", state)
+            return state
+        effective = stand.read_json(effective_path)
+        if hashlib.sha256(stand.canonical(effective)).hexdigest() != state["effective_sha256"]:
+            stand.fail("runtime: changed effective config identity")
+        groups = reserved_ports(snapshot["template"], state["reserved_ports"])
+        fixed = {(service, target, "tcp", str(port)) for (service, target), port in groups.items()}
+        # down operates on every service, including previous/orphan containers.
+        validate_config(effective, root, list(effective.get("services", {})), state["project_name"], fixed=fixed,
+                        publish_ip=publish_address(state.get("publish_ip", "127.0.0.1")))
+        paths = deletion_bind_paths(root, effective, compose_path)
+        if safe_path(root, root / ".runtime.env").read_text(encoding="utf-8"):
+            stand.fail("runtime: controlled environment file was modified")
+        log = safe_path(root, root / "logs" / ("delete-" + uuid.uuid4().hex + ".log"), exists=False)
+        log.parent.mkdir(exist_ok=True)
+        record = {"started_at": now(), "status": "running", "log": str(log.relative_to(root))}
+        state.setdefault("deletions", []).append(record)
+        atomic_json(root / "execution.json", state)
+        try:
+            executor = Executor(root, environment(root, snapshot), timeout, cancel=cancel or (lambda: False))
+            executor.docker_check(log)
+            compose = prefix(root, effective_path, state["project_name"])
+            deletion_resources(executor, effective, compose, state["project_name"], log)
+            executor.call([*compose, "down", "--volumes", "--remove-orphans"], log)
+            for path in paths:
+                executor.checkpoint()
+                safe_path(root, path, exists=False)
+                if path.is_dir():
+                    shutil.rmtree(path)
+                elif path.exists():
+                    path.unlink()
+            record.update(status="success", finished_at=now())
+            state.update(status="deleted", deleted_at=now())
+            atomic_json(root / "execution.json", state)
             return state
         except (Exception, KeyboardInterrupt) as exc:
             record.update(status="failed", finished_at=now(), error=str(exc))

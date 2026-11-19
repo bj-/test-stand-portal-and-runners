@@ -50,7 +50,7 @@ Compose executor. Запускаемый шаблон: [template-demo](../exampl
 | `parameters` | Map имён в `{type, default?, enum?}`; тип string/integer/number/boolean, без default значение обязательно в request |
 | `secret_refs` | Уникальные имена ссылок на секреты, без значений; разрешаются только будущим executor из локальной установки |
 | `smoke` | `{runner, env, suite}`; runner — component ID, env — безопасное имя файла окружения (может начинаться цифрой), suite — переносимый относительный путь к набору проверок |
-| `output_bindings` | Map имён переменных в `{service, port, scheme, path}`; сервис обязателен в каждом профиле, port — container port 1..65535, scheme — http/https |
+| `output_bindings` | Сопоставляет ключ адреса с `{service, port, scheme, path, title?}`. Сервис входит в каждый профиль, port — порт контейнера от 1 до 65535, scheme — http/https, title — подпись ссылки для мастера и карточки. |
 
 Профили и команды являются декларацией. Здесь не проверяются синтаксис Compose,
 реальное наличие объявленных сервисов в Compose, применимость ограничений CPU/RAM,

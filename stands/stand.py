@@ -218,7 +218,11 @@ def validate_template(t):
         fail("output_bindings: expected object")
     for name, binding in t["output_bindings"].items():
         identifier(name, "output binding")
-        obj(binding, ("service", "port", "scheme", "path"), label="output binding")
+        obj(binding, ("service", "port", "scheme", "path"), ("title",), label="output binding")
+        if "title" in binding:
+            title = string(binding["title"], "output binding.title")
+            if not title.strip() or len(title) > 200 or not title.isprintable():
+                fail("output binding.title: expected 1..200 printable characters")
         if identifier(binding["service"], "binding.service") not in required:
             fail("output binding: service must be required in every profile")
         if type(binding["port"]) is not int or not 1 <= binding["port"] <= 65535:
