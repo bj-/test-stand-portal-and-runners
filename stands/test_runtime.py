@@ -58,6 +58,7 @@ class RuntimeTests(unittest.TestCase):
         self.envs = []
         self.failure = None
         self.config_mutation = None
+        self.real_run = subprocess.run
         patch = mock.patch.object(runtime.subprocess, "run", side_effect=self.docker)
         patch.start()
         self.addCleanup(patch.stop)
@@ -400,7 +401,7 @@ class RuntimeTests(unittest.TestCase):
         started = time.monotonic()
         executor = runtime.Executor(self.root, runtime.environment(self.root, self.snapshot), 10,
                                     cancel=lambda: time.monotonic() - started > 0.3)
-        with self.assertRaises(runtime.Cancelled):
+        with mock.patch.object(runtime.subprocess, "run", self.real_run), self.assertRaises(runtime.Cancelled):
             executor.call([sys.executable, '-c', 'import time; print("started", flush=True); time.sleep(30)'],
                           self.root / 'cancel.log')
         self.assertLess(time.monotonic() - started, 5)
