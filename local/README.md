@@ -24,7 +24,7 @@ plugin на Ubuntu. Установите их заранее обычным сп
 Windows PowerShell:
 
 ```powershell
-python local/portal_local.py --workspace "C:/portal work/demo" --portal-source "C:/git/test-portal" init --name demo --port 8080
+python local/portal_local.py --workspace "C:/portal work/demo" --portal-source "../test-portal" init --name demo --port 8080
 python local/portal_local.py --workspace "C:/portal work/demo" doctor
 python local/portal_local.py --workspace "C:/portal work/demo" up
 python local/portal_local.py --workspace "C:/portal work/demo" admin-init

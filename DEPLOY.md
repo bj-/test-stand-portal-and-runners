@@ -7,10 +7,10 @@
 
 ## Windows
 
-Откройте обычный PowerShell. Для текущего размещения исходников:
+Откройте PowerShell в корне этого репозитория. Пример для соседнего клона `test-portal`.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\git\test-stand-portal-and-runners\deploy.ps1 -Workspace C:\stand-lab -PortalSource C:\git\test-portal
+powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy.ps1 -Workspace C:\stand-lab -PortalSource ..\test-portal
 ```
 
 При первом запуске выберите новый внешний каталог `C:\stand-lab`. Для проверки
@@ -84,7 +84,7 @@ SQLite хранится в именованном Docker volume этого ст�
 Отдельный пример с API из feature-ветки и smoke из test (Docker уже установлен):
 
 ```powershell
-python C:\git\test-stand-portal-and-runners\installer\deploy_demo.py --workspace C:\stand-feature --api-ref feature-demo --runner-ref test
+python .\installer\deploy_demo.py --workspace C:\stand-feature --api-ref feature-demo --runner-ref test
 ```
 
 Для подготовки без Docker добавьте `--prepare-only`. Новая комбинация refs требует
@@ -95,7 +95,7 @@ python C:\git\test-stand-portal-and-runners\installer\deploy_demo.py --workspace
 Остановить учебный стенд, сохранив контейнеры и данные:
 
 ```powershell
-Set-Location C:\git\test-stand-portal-and-runners
+# Из корня этого репозитория
 python -m stands stop --workspace C:\stand-lab\example\build
 python local/portal_local.py --workspace C:\stand-lab\portal down
 ```
@@ -137,9 +137,9 @@ Standalone-пример из этого deploy-скрипта по-прежне�
 для управляемого экземпляра используйте каталог/API портала.
 
 ```powershell
-python C:\git\test-stand-portal-and-runners\local\portal_local.py --workspace C:\stand-lab\portal agent-status
-python C:\git\test-stand-portal-and-runners\local\portal_local.py --workspace C:\stand-lab\portal agent-stop
-python C:\git\test-stand-portal-and-runners\local\portal_local.py --workspace C:\stand-lab\portal agent-start
+python .\local\portal_local.py --workspace C:\stand-lab\portal agent-status
+python .\local\portal_local.py --workspace C:\stand-lab\portal agent-stop
+python .\local\portal_local.py --workspace C:\stand-lab\portal agent-start
 ```
 
 После перезагрузки повторите installer либо `agent-start`: служба автозапуска ОС
