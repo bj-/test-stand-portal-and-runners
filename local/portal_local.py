@@ -44,7 +44,7 @@ def valid_port(value: str) -> int:
 def portal_source_path(value: str) -> Path:
     source = Path(value).expanduser().resolve()
     if not all((source / name).is_file() for name in ("docker-compose.yaml", "Dockerfile")):
-        raise LocalError("portal source должен содержать docker-compose.yaml и Dockerfile продукта")
+        raise LocalError("portal source должен содержать docker-compose.yaml и Dockerfile продукта; укажите --portal-source PATH")
     return source
 
 
@@ -277,7 +277,7 @@ def run_interactive(command: list[str], env: dict[str, str]) -> int:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--workspace", required=True, help="каталог установки вне исходников")
-    result.add_argument("--portal-source", help="путь отдельного клона портала; обязателен для первого init")
+    result.add_argument("--portal-source", help="исходники портала; по умолчанию сохранённый путь или корень общего checkout")
     commands = result.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="создать пустую установку без Docker")
     init.add_argument("--name", type=valid_name, help="основа имени Compose (по умолчанию portal-local)")
@@ -286,7 +286,7 @@ def parser() -> argparse.ArgumentParser:
                             ("up", "собрать и запустить портал"), ("down", "остановить, сохранив данные"),
                             ("status", "состояние контейнеров")):
         commands.add_parser(name, help=help_text)
-    commands.add_parser("admin-init", help="создать admin/admin только в пустой базе пользователей")
+    commands.add_parser("admin-init", help="создать admin со случайным паролем только в пустой базе пользователей")
     commands.add_parser("agent-init", help="зарегистрировать токен host-агента, сохранив существующий")
     commands.add_parser("agent-status", help="показать состояние host-агента")
     for action, default in (("agent-start", 15), ("agent-stop", 30)):
@@ -314,9 +314,7 @@ def main(argv: list[str] | None = None) -> int:
         workspace = workspace_path(args.workspace)
         if args.command == "init":
             existing = load_workspace(workspace) if (workspace / MARKER).is_file() else None
-            source_value = args.portal_source or (existing["portal_source"] if existing else None)
-            if not source_value:
-                raise LocalError("для первого init требуется --portal-source PATH к отдельному клону портала")
+            source_value = args.portal_source or (existing["portal_source"] if existing else str(REPO))
             source = portal_source_path(source_value)
             workspace = workspace_path(args.workspace, source)
             data = init_workspace(workspace, args.name, args.port, source)

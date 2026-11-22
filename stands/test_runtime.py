@@ -108,7 +108,7 @@ class RuntimeTests(unittest.TestCase):
             self.events.append("port")
             return subprocess.CompletedProcess(argv, 0, "127.0.0.1:49123\n")
         if operation == "run":
-            event = "migrate" if "migrate" in argv else "seed" if "seed" in argv else "smoke"
+            event = "migrate" if "migrate" in argv else "seed" if "seed" in argv else "liveness" if "probe" in argv else "smoke"
         elif operation == "up":
             event = "healthcheck" if "--wait" in argv else "deploy"
         else:
@@ -118,10 +118,126 @@ class RuntimeTests(unittest.TestCase):
             kwargs["stdout"].write("fake Docker output\n")
         if self.failure == "timeout-" + event:
             raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
-        return subprocess.CompletedProcess(argv, 19 if self.failure == event else 0, "")
+        return subprocess.CompletedProcess(argv, 19 if self.failure == event or isinstance(self.failure, set) and event in self.failure else 0, "")
 
     def state(self):
         return stand.read_json(self.root / "execution.json")
+
+    def enable_liveness(self):
+        self.template["liveness"] = {"api": {"component": "smoke", "argv": [
+            "docker", "compose", "run", "runner", "probe"]}}
+        self.write_snapshot()
+
+    def test_liveness_runs_only_after_failed_smoke_and_preserves_results(self):
+        self.enable_liveness()
+        state = runtime.run(self.root)
+        self.assertEqual(state["status"], "success")
+        self.assertNotIn("liveness", self.events)
+        self.failure = "smoke"
+        state = runtime.run(self.root, retry=True)
+        self.assertEqual(state["status"], "limited")
+        attempt = state["attempts"][-1]
+        self.assertEqual(attempt["status"], "limited")
+        self.assertEqual([(r["name"], r["status"]) for r in attempt["stages"]][-2:],
+                         [("smoke", "failed"), ("liveness", "success")])
+        self.assertTrue(state["images"])
+        self.assertTrue(state["output_bindings"])
+        self.assertIn("liveness: api", (self.root / attempt["logs"] / "liveness.log").read_text())
+        probe = next(c for c in self.commands if "probe" in c)
+        self.assertIn("--rm", probe)
+        self.assertIn("--no-deps", probe)
+        with self.assertRaisesRegex(stand.StandError, "use --retry"):
+            runtime.run(self.root)
+        self.assertEqual(runtime.stop(self.root)["status"], "stopped")
+
+    def test_failed_liveness_runs_all_selected_probes(self):
+        self.enable_liveness()
+        self.template["liveness"]["runner"] = self.template["liveness"]["api"].copy()
+        self.write_snapshot()
+        self.failure = {"smoke", "liveness"}
+        with self.assertRaisesRegex(runtime.CommandFailed, "liveness failed"):
+            runtime.run(self.root)
+        self.assertEqual(self.events.count("liveness"), 2)
+        self.assertEqual(self.state()["status"], "failed")
+        self.assertEqual(self.state()["attempts"][-1]["stages"][-1]["status"], "failed")
+
+    def test_liveness_does_not_mask_timeout_start_or_progress_errors(self):
+        self.enable_liveness()
+        self.failure = "timeout-smoke"
+        with self.assertRaisesRegex(stand.StandError, "timed out"):
+            runtime.run(self.root)
+        self.assertNotIn("liveness", self.events)
+        self.failure = "smoke"
+        def progress(record):
+            if record["name"] == "smoke" and record["status"] == "failed":
+                raise OSError("progress write failed")
+        with self.assertRaisesRegex(OSError, "progress write failed"):
+            runtime.run(self.root, retry=True, progress=progress)
+        self.assertNotIn("liveness", self.events)
+
+    def test_cancel_between_smoke_failure_and_liveness(self):
+        self.enable_liveness()
+        self.failure = "smoke"
+        cancelled = []
+        def progress(record):
+            if record["name"] == "smoke" and record["status"] == "failed":
+                cancelled.append(True)
+        def checkpoint(executor):
+            if cancelled:
+                raise runtime.Cancelled("cancelled")
+        with mock.patch.object(runtime.Executor, "checkpoint", checkpoint):
+            with self.assertRaises(runtime.Cancelled):
+                runtime.run(self.root, progress=progress)
+        self.assertNotIn("liveness", self.events)
+        self.assertEqual(self.state()["status"], "failed")
+
+    def test_liveness_outside_active_profile_keeps_strict_smoke(self):
+        self.template["profiles"]["other"] = {"services": ["api", "optional"], "resources": {"cpus": 1, "memory_mb": 512}}
+        self.template["liveness"] = {"optional": {"component": "smoke", "argv": ["docker", "compose", "run", "runner", "probe"]}}
+        self.write_snapshot()
+        self.failure = "smoke"
+        with self.assertRaises(runtime.CommandFailed):
+            runtime.run(self.root)
+        self.assertNotIn("liveness", self.events)
+
+    def test_liveness_does_not_mask_start_failure_or_previous_stage_failure(self):
+        self.enable_liveness()
+        original = self.docker
+        def cannot_start(argv, **kwargs):
+            if "run" in argv and "runner" in argv:
+                raise OSError("cannot start")
+            return original(argv, **kwargs)
+        with mock.patch.object(runtime.subprocess, "run", side_effect=cannot_start):
+            with self.assertRaisesRegex(stand.StandError, "could not start"):
+                runtime.run(self.root)
+        self.assertNotIn("liveness", self.events)
+        self.failure = "healthcheck"
+        with self.assertRaises(runtime.CommandFailed):
+            runtime.run(self.root, retry=True)
+        self.assertNotIn("liveness", self.events)
+
+    def test_cancel_during_liveness_stops_remaining_probes(self):
+        self.enable_liveness()
+        self.template["liveness"]["runner"] = self.template["liveness"]["api"].copy()
+        self.write_snapshot()
+        self.failure = "smoke"
+        def checkpoint(executor):
+            if "liveness" in self.events:
+                raise runtime.Cancelled("cancelled during probes")
+        with mock.patch.object(runtime.Executor, "checkpoint", checkpoint):
+            with self.assertRaises(runtime.Cancelled):
+                runtime.run(self.root)
+        self.assertEqual(self.events.count("liveness"), 1)
+        self.assertEqual(self.state()["status"], "failed")
+        self.assertEqual(self.state()["attempts"][-1]["stages"][-1]["status"], "failed")
+
+    def test_liveness_normalization_rejects_build_and_other_operations(self):
+        for argv in (["docker", "compose", "run", "--build", "runner"],
+                     ["docker", "compose", "up", "--wait", "api"]):
+            with self.assertRaises(stand.StandError):
+                runtime.normalize({"argv": argv}, "liveness", ["api", "runner"])
+        self.assertEqual(runtime.normalize({"argv": ["docker", "compose", "run", "-T", "runner"]},
+                                          "liveness", ["runner"]), ["run", "-T", "--rm", "--no-deps", "runner"])
 
     def test_success_order_isolation_bindings_limits_images_and_no_host_secret(self):
         state = runtime.run(self.root)

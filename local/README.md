@@ -3,28 +3,30 @@
 Launcher поднимает портал с PostgreSQL и управляет фоновым `stands.worker` на хосте.
 Installer сам выполняет `agent-init`/`agent-start`; ключи и настройки находятся
 в workspace/agent. Docker socket не монтируется в портал. Каталоги приложений
-первоначально пусты; настройка — `test-portal/docs/local-stand-agent.md`.
+первоначально пусты; настройка — [локальный агент](../docs/local-stand-agent.md).
 Команды `agent-status`, `agent-stop`, `agent-start` используют тот же `--workspace`.
 Системная служба автозапуска ОС пока не устанавливается.
 
-Launcher использует `docker-compose.yaml` из отдельного локального клона
-`test-portal` и Python 3.12+ без дополнительных Python-пакетов. Исходники портала
-получите заранее принятым в вашей команде способом: launcher ничего не клонирует.
+Launcher использует `docker-compose.yaml` из корня общего checkout и Python 3.12+
+без дополнительных Python-пакетов. Внешний checkout можно выбрать через
+`--portal-source PATH`: launcher ничего не клонирует.
 Нужен установленный Docker с Compose v2 и запущенным daemon:
 Docker Desktop с Linux containers на Windows/macOS или Docker Engine с Compose
 plugin на Ubuntu. Установите их заранее обычным способом для своей ОС.
 При первой сборке Docker загружает базовые образы и зависимости продукта из сети.
 
 Запускайте команды из корня `test-stand-portal-and-runners`. Workspace должен находиться
-**вне обоих клонов**. Первый `init` требует `--portal-source` с путём к клону портала,
-содержащему `docker-compose.yaml` и `Dockerfile`. Путь сохраняется в marker;
-последующие команды используют его автоматически. Повторный параметр должен совпадать.
+**вне исходников комплекта и внешнего портала**. Первый `init` без `--portal-source`
+выбирает корень общего checkout с `docker-compose.yaml` и `Dockerfile`. Явно переданный
+путь имеет приоритет. Путь сохраняется в marker; повторный `init` без параметра
+сохраняет этот источник, последующие команды используют его автоматически.
+Повторный параметр должен совпадать с сохранённым.
 В нём создаётся пустой `projects.yaml`; клиентская конфигурация из клона не копируется.
 
 Windows PowerShell:
 
 ```powershell
-python local/portal_local.py --workspace "C:/portal work/demo" --portal-source "../test-portal" init --name demo --port 8080
+python local/portal_local.py --workspace "C:/portal work/demo" init --name demo --port 8080
 python local/portal_local.py --workspace "C:/portal work/demo" doctor
 python local/portal_local.py --workspace "C:/portal work/demo" up
 python local/portal_local.py --workspace "C:/portal work/demo" admin-init
@@ -33,14 +35,16 @@ python local/portal_local.py --workspace "C:/portal work/demo" admin-init
 Ubuntu и macOS:
 
 ```bash
-python3 local/portal_local.py --workspace "$HOME/portal work/demo" --portal-source "$HOME/git/test-portal" init --name demo --port 8080
+python3 local/portal_local.py --workspace "$HOME/portal work/demo" init --name demo --port 8080
 python3 local/portal_local.py --workspace "$HOME/portal work/demo" doctor
 python3 local/portal_local.py --workspace "$HOME/portal work/demo" up
 python3 local/portal_local.py --workspace "$HOME/portal work/demo" admin-init
 ```
 
-Откройте <http://127.0.0.1:8080>. `admin-init` создаёт `admin/admin` без терминального
-ввода только при пустой таблице пользователей. Повтор сохраняет существующие учётки.
+Откройте <http://127.0.0.1:8080>. `admin-init` создаёт `admin` со случайным паролем
+без терминального ввода только при пустой таблице пользователей. Пароль отображается
+в обычном терминале только при создании; сохраните его для первого входа. Повтор
+сохраняет существующие учётки и не выводит пароль.
 После входа можно сменить пароль или оставить как есть; смена доступна позже в профиле.
 Для других пользователей `user-add` вызывает штатный интерактивный CLI:
 пароль пользователя вводится дважды, минимум 10 символов. По умолчанию создаётся
@@ -58,7 +62,7 @@ python3 local/portal_local.py --workspace "$HOME/portal work/demo" admin-init
 | `status` | Показать контейнеры, включая остановленные |
 | `logs --tail 100 --follow` | Смотреть журнал контейнеров |
 | `user-add LOGIN` | Создать учётную запись штатным CLI |
-| `admin-init` | Создать admin/admin в пустой базе без TTY; существующие учётки не менять |
+| `admin-init` | Создать admin со случайным паролем в пустой базе без TTY; пароль показать один раз |
 | `sync` / `sync --project CODE` | Индексировать настроенные результаты штатным CLI |
 
 `init` работает без Docker и сохраняет существующие настройки при повторе.

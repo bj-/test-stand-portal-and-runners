@@ -1,0 +1,52 @@
+.stand-create { max-width: 900px; min-width: 0; }
+.stand-create-steps { list-style: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 0; margin: 22px 0; }
+.stand-create-steps li { display: flex; align-items: center; gap: 8px; color: var(--ink-2); padding-bottom: 10px; border-bottom: 2px solid var(--line); font-size: 13px; overflow-wrap: anywhere; }
+.stand-create-steps li span { border: 1px solid var(--axis); width: 26px; height: 26px; display: grid; place-items: center; flex-shrink: 0; border-radius: 50%; }
+.stand-create-steps li[aria-current="step"] { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.stand-create form { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 20px; }
+.stand-create form h2 { margin: 0 0 20px; }
+.stand-create-fields { display: grid; gap: 16px; padding: 0; border: 0; margin: 0; min-width: 0; }
+.stand-create label { display: grid; gap: 6px; font-size: 14px; min-width: 0; }
+.stand-create label input, .stand-create label select, .stand-create textarea { width: 100%; min-width: 0; max-width: 100%; padding: 9px 10px; border: 1px solid var(--axis); border-radius: 5px; font: inherit; color: var(--ink); background: var(--bg); }
+.stand-create textarea { resize: vertical; }
+.stand-create input:disabled, .stand-create select:disabled, .stand-create textarea:disabled, .stand-create button:disabled { opacity: .65; cursor: default; }
+.stand-create button:not(.primary) { padding: 8px 12px; border: 1px solid var(--axis); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; cursor: pointer; }
+.stand-create :is(input, select, textarea, button, a, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.stand-create .sub { margin: 0; }
+.stand-create-template, .stand-create-name-conflict { display: grid; gap: 12px; min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 16px; overflow-wrap: anywhere; }
+.stand-create-template h3, .stand-create-name-conflict p { margin: 0; }
+.stand-create-template details { padding-top: 12px; border-top: 1px solid var(--line); }
+.stand-create-template details summary { cursor: pointer; color: var(--accent); }
+.stand-create-template details label, .stand-create-template details p { margin-top: 10px; }
+.stand-create-name { display: grid; gap: 8px; min-width: 0; justify-items: start; }
+.stand-create-name label, .stand-create-name-conflict { width: 100%; }
+.stand-create-name-conflict { border-color: var(--warning); }
+.stand-create-name-conflict div { display: flex; flex-wrap: wrap; gap: 8px; }
+.stand-create-component { min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 16px; display: grid; gap: 12px; }
+.stand-create-component legend { padding: 0 6px; font-weight: 600; overflow-wrap: anywhere; }
+.stand-create-source { display: block; }
+.stand-create-source summary { cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+.stand-create-source summary .sub { display: block; margin-top: 4px; font-weight: 400; }
+.stand-create-source[open] > :not(summary) { margin-top: 12px; }
+.stand-create-source-fields { display: grid; gap: 12px; min-width: 0; }
+.stand-create-ref { min-width: 0; display: grid; gap: 8px; }
+.stand-create-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+.stand-create button { white-space: normal; overflow-wrap: anywhere; }
+.stand-create-error { color: var(--critical-ink); border: 1px solid var(--critical); border-radius: 6px; padding: 14px; overflow-wrap: anywhere; }
+.stand-create-warning { color: var(--warning-ink); overflow-wrap: anywhere; }
+.stand-create-summary { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(0, 3fr); gap: 10px 20px; margin: 0; }
+.stand-create-summary dt { color: var(--ink-2); font-size: 13px; }
+.stand-create-summary dd { margin: 0; overflow-wrap: anywhere; }
+.stand-create-check { padding: 16px; border: 1px solid var(--good); border-radius: 6px; min-width: 0; overflow-wrap: anywhere; }
+.stand-create-check h3 { color: var(--good-ink); margin: 0 0 12px; }
+.stand-create-check ul { padding-left: 20px; }
+.stand-create-sha { font-family: ui-monospace, Consolas, monospace; }
+.stand-create-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (max-width: 600px) {
+  .stand-create-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stand-create form { padding: 14px; }
+  .stand-create-component { padding: 12px; }
+  .stand-create-summary { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .stand-create-summary dd { margin-bottom: 12px; }
+  .stand-create-actions button { flex: 1 1 130px; }
+}

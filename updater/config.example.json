@@ -1,0 +1,14 @@
+{
+  "repository": "https://git.example.invalid/portal.git",
+  "ref": "refs/heads/main",
+  "state_dir": "/srv/data/portal/updates",
+  "work_dir": "/srv/data/portal/updater",
+  "adapter": ["/opt/test-portal-updater/adapter.py", "--profile", "main"],
+  "interval_seconds": 3600,
+  "auto_apply": true,
+  "git_timeout_seconds": 60,
+  "command_timeout_seconds": 300,
+  "prepare_timeout_seconds": 1800,
+  "drain_timeout_seconds": 1800,
+  "poll_seconds": 3
+}

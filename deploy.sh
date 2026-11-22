@@ -3,7 +3,7 @@
 set -euo pipefail
 workspace='' portal_source='' install_name='' install_port='' create_admin=0 retry=0 mode=install
 usage() {
-  printf '%s\n' 'Usage: bash deploy.sh --workspace PATH --portal-source PATH [--name NAME] [--port PORT] [--create-admin] [--retry] [--check | --dry-run]'
+  printf '%s\n' 'Usage: bash deploy.sh --workspace PATH [--portal-source PATH] [--name NAME] [--port PORT] [--create-admin] [--retry] [--check | --dry-run]'
 }
 fail() { printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
 while (($#)); do
@@ -23,17 +23,19 @@ while (($#)); do
     *) fail "Неизвестный аргумент: $1";;
   esac
 done
-[[ -n $workspace && -n $portal_source ]] || { usage >&2; exit 1; }
+[[ -n $workspace ]] || { usage >&2; exit 1; }
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 rerun() {
-  printf 'Повторить: bash %q --workspace %q --portal-source %q' "$script_dir/deploy.sh" "$workspace" "$portal_source"
+  printf 'Повторить: bash %q --workspace %q' "$script_dir/deploy.sh" "$workspace"
+  [[ -z $portal_source ]] || printf ' --portal-source %q' "$portal_source"
   [[ -z $install_name ]] || printf ' --name %q' "$install_name"
   [[ -z $install_port ]] || printf ' --port %q' "$install_port"
   ((create_admin == 0)) || printf ' --create-admin'
   ((retry == 0)) || printf ' --retry'
   printf '\n'
 }
-installer_args=(--workspace "$workspace/portal" --portal-source "$portal_source")
+installer_args=(--workspace "$workspace/portal")
+[[ -z $portal_source ]] || installer_args+=(--portal-source "$portal_source")
 [[ -z $install_name ]] || installer_args+=(--name "$install_name")
 [[ -z $install_port ]] || installer_args+=(--port "$install_port")
 ((create_admin == 0)) || installer_args+=(--create-admin)

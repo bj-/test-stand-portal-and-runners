@@ -61,10 +61,10 @@ class DeployWrapperTests(unittest.TestCase):
         self.env.update(BASH_ENV=bash_env.as_posix(), DEPLOY_TEST_BIN=guard_path,
                         DEPLOY_TEST_PYTHON=Path(sys.executable).as_posix())
 
-    def run_bash(self, *args):
+    def run_bash(self, *args, source=True):
         return subprocess.run([self.bash, (self.repo / "deploy.sh").as_posix(),
                                "--workspace", self.workspace.as_posix(),
-                               "--portal-source", self.source.as_posix(), *args],
+                               *(["--portal-source", self.source.as_posix()] if source else []), *args],
                               env=self.env, capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=30)
 
@@ -78,10 +78,10 @@ class DeployWrapperTests(unittest.TestCase):
             "$PSBoundParameters | ConvertTo-Json | Set-Content -LiteralPath $env:DEPLOY_TEST_LOG\n"
             "exit ([int]$env:DEPLOY_TEST_EXIT)\n", encoding="utf-8-sig")
 
-    def run_powershell(self, *args):
+    def run_powershell(self, *args, source=True):
         return subprocess.run([self.powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                                str(self.repo / "deploy.ps1"), "-Workspace", str(self.workspace),
-                               "-PortalSource", str(self.source), *args], env=self.env,
+                               *(["-PortalSource", str(self.source)] if source else []), *args], env=self.env,
                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=40)
 
     def assert_demo(self, retry):
@@ -89,6 +89,20 @@ class DeployWrapperTests(unittest.TestCase):
         self.assertEqual(args[0], "--workspace")
         self.assertEqual(Path(args[1]), self.workspace / "example")
         self.assertEqual(args[2:], ["--retry"] if retry else [])
+
+    def test_wrappers_preserve_omitted_source_for_installer(self):
+        self.bash_fixture()
+        result = self.run_bash("--dry-run", source=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("--portal-source", self.log.read_text())
+        self.assertFalse(self.demo_log.exists())
+
+    def test_powershell_preserves_omitted_source_for_installer(self):
+        self.powershell_fixture()
+        result = self.run_powershell("-Plan", source=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("PortalSource", json.loads(self.log.read_text(encoding="utf-8-sig")))
+        self.assertFalse(self.demo_log.exists())
 
     def test_bash_syntax(self):
         bash = bash_executable()

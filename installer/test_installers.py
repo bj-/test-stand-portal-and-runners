@@ -79,14 +79,28 @@ raise SystemExit(0)
         self.env["PORTAL_TEST_PYTHON"] = Path(sys.executable).as_posix()
         self.shell_file("python3.12", 'exec "$PORTAL_TEST_PYTHON" "$PORTAL_TEST_MOCK" "$@"')
 
-    def run_bash(self, *args):
+    def run_bash(self, *args, source=True):
         bash = bash_executable()
         if not bash:
             self.skipTest("Bash unavailable")
         return subprocess.run([bash, (INSTALLER / "install.sh").as_posix(),
                                "--workspace", self.workspace.as_posix(),
-                               "--portal-source", self.source.as_posix(), *args],
+                               *(["--portal-source", self.source.as_posix()] if source else []), *args],
                               env=self.env, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=45)
+
+    def test_bash_omitted_source_defaults_to_bundle_and_keeps_existing_external_source(self):
+        self.bash_fixture()
+        result = self.run_bash(source=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        marker = self.workspace / ".portal-local.json"
+        self.assertEqual(Path(json.loads(marker.read_text())["portal_source"]), REPO)
+        self.workspace = self.root / "external workspace"
+        self.env["PORTAL_TEST_WORKSPACE"] = str(self.workspace)
+        self.assertEqual(self.run_bash().returncode, 0)
+        result = self.run_bash(source=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(Path(json.loads((self.workspace / ".portal-local.json").read_text())["portal_source"]), self.source)
+        self.assertFalse(self.mutations.exists())
 
     def test_bash_syntax(self):
         bash = bash_executable()
@@ -230,7 +244,7 @@ $invokeArgs[$env:PORTAL_TEST_MODE] = $true
                     self.assertFalse(self.workspace.exists())
                     self.assertFalse(self.mutations.exists())
 
-    def run_powershell_install(self, executable, *, create_admin=False):
+    def run_powershell_install(self, executable, *, create_admin=False, source=True):
         wrapper = r'''$ErrorActionPreference='Stop'
 function Get-Command {
     param([string]$Name, $ErrorAction)
@@ -258,16 +272,34 @@ function Mark-Mutation { [IO.File]::AppendAllText($env:PORTAL_TEST_MUTATIONS, "u
 function winget.exe { Mark-Mutation }
 function Start-Process { Mark-Mutation }
 function Set-Content { Mark-Mutation }
-$invokeArgs = @{ Workspace=$env:PORTAL_TEST_WORKSPACE; PortalSource=$env:PORTAL_TEST_SOURCE }
+$invokeArgs = @{ Workspace=$env:PORTAL_TEST_WORKSPACE }
+if ($env:PORTAL_TEST_EXPLICIT_SOURCE -eq '1') { $invokeArgs['PortalSource'] = $env:PORTAL_TEST_SOURCE }
 if ($env:PORTAL_TEST_CREATE_ADMIN -eq '1') { $invokeArgs['CreateAdmin'] = $true }
 & $env:PORTAL_TEST_INSTALL_PS @invokeArgs
 '''
-        env = dict(self.env, PORTAL_TEST_CREATE_ADMIN="1" if create_admin else "0")
+        env = dict(self.env, PORTAL_TEST_CREATE_ADMIN="1" if create_admin else "0",
+                   PORTAL_TEST_EXPLICIT_SOURCE="1" if source else "0")
         env.setdefault("PORTAL_TEST_ADMIN_EXIT", "0")
         env.setdefault("PORTAL_TEST_AGENT_INIT_EXIT", "0")
         env.setdefault("PORTAL_TEST_AGENT_START_EXIT", "0")
         return subprocess.run([executable, "-NoProfile", "-NonInteractive", "-Command", wrapper],
                               env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=45)
+
+    def test_powershell_omitted_source_defaults_to_bundle_and_keeps_external_source(self):
+        for index, executable in enumerate(self.powershells()):
+            self.workspace = self.root / f"bundled workspace {index}"
+            self.env["PORTAL_TEST_WORKSPACE"] = str(self.workspace)
+            result = self.run_powershell_install(executable, source=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(Path(json.loads((self.workspace / ".portal-local.json").read_text())["portal_source"]), REPO)
+            self.workspace = self.root / f"external workspace {index}"
+            self.env["PORTAL_TEST_WORKSPACE"] = str(self.workspace)
+            result = self.run_powershell_install(executable)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            result = self.run_powershell_install(executable, source=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(Path(json.loads((self.workspace / ".portal-local.json").read_text())["portal_source"]), self.source)
+            self.assertFalse(self.mutations.exists())
 
     def test_powershell_admin_init_is_automatic_repeated_and_failure_is_fatal(self):
         for executable in self.powershells():

@@ -1,0 +1,39 @@
+.stand-detail { min-width: 0; }
+.stand-detail .page-head h1 { overflow-wrap: anywhere; min-width: 0; }
+.stand-detail .tag { margin-left: 0; white-space: normal; }
+.stand-detail .notice { margin: 14px 0; }
+.stand-detail-error { color: var(--critical-ink); }
+.stand-detail-warning { color: var(--warning-ink); }
+.stand-build-limited { border: 2px solid var(--warning); }
+.stand-build-limited .stand-build-progress progress { accent-color: var(--warning); }
+.stand-detail-error p { margin: 0; }
+.stand-detail-error button { margin-top: 12px; }
+.stand-detail-facts { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); }
+.stand-detail-facts > div { min-width: 0; }
+.stand-detail-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+.stand-detail-current { display: grid; gap: 12px; margin-top: 18px; }
+.stand-detail-current h2 { margin: 0; }
+.stand-detail-plain-list { list-style: none; padding: 0; margin: 0; }
+.stand-build-list { display: grid; gap: 16px; }
+.stand-build { min-width: 0; scroll-margin-top: 20px; overflow-wrap: anywhere; }
+.stand-build h3 { font-size: 17px; margin: 0; }
+.stand-build > .sub { margin-top: 8px; }
+.stand-build h4 { margin: 0 0 8px; font-size: 14px; }
+.stand-build-progress { margin-top: 18px; font-size: 13px; color: var(--ink-2); }
+.stand-build-progress progress { accent-color: var(--good); width: 140px; height: 8px; }
+.stand-build-stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); list-style: none; margin: 10px 0 20px; padding: 0; gap: 8px 16px; }
+.stand-build-stages li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.stand-build-stages .tag { font-size: 12px; flex-shrink: 0; }
+.stand-build-sources .stand-detail-plain-list { display: grid; gap: 12px; }
+.stand-build-sha { display: block; overflow-wrap: anywhere; font-size: 12px; margin-top: 3px; }
+.stand-build-images { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 12px; }
+.stand-build-images li + li { margin-top: 12px; }
+.stand-build-images code { font-size: 12px; overflow-wrap: anywhere; }
+.stand-build-actions { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.stand-build-actions a { font-size: 13px; }
+.stand-build-actions button { margin-left: auto; }
+@media (max-width: 540px) {
+  .stand-build, .stand-detail-current { padding: 14px; }
+  .stand-detail .page-head h1 { flex-basis: 100%; }
+  .stand-build-actions button { width: 100%; margin-left: 0; }
+}

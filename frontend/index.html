@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Test Portal</title>
+    <script>
+      // Тема до загрузки приложения, чтобы страница не мигала: из профиля (кешируется в браузере), по умолчанию тёмная.
+      try { document.documentElement.dataset.theme = localStorage.getItem("portal-theme") || "dark"; }
+      catch (e) { document.documentElement.dataset.theme = "dark"; }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -85,6 +85,24 @@ class WorkerTests(unittest.TestCase):
     def finishes(self):
         return [value for _, path, value, _ in self.api.calls if path.endswith('/finish')]
 
+    def test_limited_finish_keeps_failed_smoke_and_uploads_available_artifacts(self):
+        def limited(workspace, **kwargs):
+            state = self.fake_runtime(workspace, **kwargs)
+            state['status'] = 'limited'
+            state['attempts'][-1]['stages'][-1]['status'] = 'failed'
+            state['attempts'][-1]['stages'].append({'name': 'liveness', 'status': 'success'})
+            (workspace / 'results/attempt/allure-report.html').unlink()
+            return state
+        with mock.patch.object(worker.runtime, 'run', side_effect=limited):
+            self.assertEqual(self.worker.job(self.job), 0)
+        finish = self.finishes()[-1]
+        self.assertEqual(finish['status'], 'done')
+        self.assertEqual(finish['stages'][-2:], [{'name': 'smoke', 'status': 'failed'},
+                                               {'name': 'liveness', 'status': 'success'}])
+        self.assertTrue(any(path.endswith('/artifacts/junit.xml') for _, path, _, _ in self.api.calls))
+        self.assertTrue(finish['images'])
+        self.assertTrue(finish['output_bindings'])
+
     def test_full_protocol_snapshot_before_docker_artifacts_before_finish_and_sources_unchanged(self):
         head = git(self.repo, 'rev-parse', 'HEAD')
         (self.repo / 'content.txt').write_text('dirty checkout')
@@ -215,7 +233,8 @@ class WorkerTests(unittest.TestCase):
 
     def test_once_idle_claims_only_capability_host_and_cleans_status(self):
         self.assertEqual(self.worker.run(once=True), 0)
-        self.assertEqual(self.api.calls[0][2], {'capabilities': ['stand-template-v1', 'stand-template-v1-delete'], 'host_id': 'local'})
+        self.assertEqual(self.api.calls[0][2], {'capabilities': ['stand-template-v1', 'stand-template-v1-delete',
+            'stand-template-v1-liveness', 'stand-template-v1-control', 'stand-template-v1-data'], 'host_id': 'local'})
         self.assertFalse((self.config['work_root'] / 'status.json').exists())
         self.assertTrue((self.config['work_root'] / '.worker.lock').exists())
         with worker.profile_lock(self.config['work_root']):

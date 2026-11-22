@@ -74,9 +74,9 @@ class LocalInstallationTests(unittest.TestCase):
         with self.assertRaises(local.LocalError):
             local.workspace_path(str(self.source / "workspace"), self.source)
 
-    def test_source_is_required_validated_and_pinned(self):
+    def test_missing_bundle_requires_explicit_source_and_existing_source_stays_pinned(self):
         output = io.StringIO()
-        with contextlib.redirect_stderr(output):
+        with contextlib.redirect_stderr(output), patch.object(local, "REPO", Path(self.temp.name) / "missing bundle"):
             code = local.main(["--workspace", str(self.workspace), "init"])
         self.assertEqual(code, 1)
         self.assertFalse(self.workspace.exists())
@@ -96,6 +96,22 @@ class LocalInstallationTests(unittest.TestCase):
         # Subsequent init can use the pinned source without repeating the flag.
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(local.main(["--workspace", str(self.workspace), "init"]), 0)
+
+    def test_init_defaults_to_bundle_and_explicit_source_wins(self):
+        bundle = Path(self.temp.name).resolve() / "bundled source"
+        bundle.mkdir()
+        for name in ("Dockerfile", "docker-compose.yaml"):
+            (bundle / name).write_text("", encoding="utf-8")
+        with patch.object(local, "REPO", bundle), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(local.main(["--workspace", str(self.workspace), "init"]), 0)
+            self.assertEqual(local.load_workspace(self.workspace)["portal_source"], str(bundle))
+            external_workspace = self.workspace.parent / "external workspace"
+            self.assertEqual(local.main(["--workspace", str(external_workspace), "--portal-source",
+                                         str(self.source), "init"]), 0)
+            self.assertEqual(local.load_workspace(external_workspace)["portal_source"], str(self.source))
+            # An omitted argument on repeat must keep an explicitly chosen external source.
+            self.assertEqual(local.main(["--workspace", str(external_workspace), "init"]), 0)
+            self.assertEqual(local.load_workspace(external_workspace)["portal_source"], str(self.source))
 
     def test_marker_identity_prevents_other_installation_control(self):
         data = self.init()
@@ -257,6 +273,16 @@ class LocalInstallationTests(unittest.TestCase):
             self.assertEqual(local.run_compose(["docker", "compose"], {}, "database-secret", noninteractive=True), 23)
         self.assertEqual(output.getvalue(), "failure: [REDACTED]\n")
         self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
+    def test_admin_init_forwards_generated_credential_to_terminal(self):
+        self.init()
+        credential = "generated-first-login-password"
+        child = [sys.executable, "-c", f"print('admin: {credential}')"]
+        output = io.StringIO()
+        with patch.object(local, "check_docker", return_value="docker"), \
+                patch.object(local, "compose_command", return_value=child), contextlib.redirect_stdout(output):
+            self.assertEqual(local.main(["--workspace", str(self.workspace), "admin-init"]), 0)
+        self.assertEqual(output.getvalue().splitlines(), [f"admin: {credential}"])
 
     def test_redirected_cp1251_streams_forward_unicode_compose_output(self):
         self.init()

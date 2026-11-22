@@ -1,10 +1,10 @@
 # test-stand-portal-and-runners
 
 Переносимый комплект тестовых стендов, инструментов установки портала и runners.
-Новый репозиторий с чистой историей и Apache-2.0. Код портала подключается из
-отдельного checkout; проектные адаптеры и конфигурация клиента не входят в поставку.
+Единый репозиторий под Apache-2.0. Код портала находится в `backend/` и `frontend/`.
+Настройки установки, доступы и рабочие данные задаются во внешнем каталоге.
 
-Стек первой версии: Python 3.12, стандартная библиотека, Docker Compose v2.
+Стек: Python 3.12+, FastAPI, SQLAlchemy, Alembic, PostgreSQL, React, TypeScript и Docker Compose.
 `local/` — launcher; `examples/http-smoke/` — нейтральный пример API и smoke runner.
 Команды и тесты — README соответствующего компонента.
 

@@ -4,7 +4,7 @@ set -euo pipefail
 
 workspace='' portal_source='' install_name='' install_port='' create_admin=0 mode=install
 usage() {
-  printf '%s\n' 'Usage: bash installer/install.sh --workspace PATH --portal-source PATH [--name NAME] [--port PORT] [--create-admin] [--check | --plan | --dry-run]'
+  printf '%s\n' 'Usage: bash installer/install.sh --workspace PATH [--portal-source PATH] [--name NAME] [--port PORT] [--create-admin] [--check | --plan | --dry-run]'
 }
 fail() { printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
 while (($#)); do
@@ -23,8 +23,7 @@ while (($#)); do
     *) fail "Неизвестный аргумент: $1";;
   esac
 done
-[[ -n $workspace && -n $portal_source ]] || { usage >&2; exit 1; }
-[[ -f $portal_source/docker-compose.yaml && -f $portal_source/Dockerfile ]] || fail 'portal-source должен содержать docker-compose.yaml и Dockerfile продукта'
+[[ -n $workspace ]] || { usage >&2; exit 1; }
 if [[ -n $install_name && ! $install_name =~ ^[a-z0-9][a-z0-9_-]{0,39}$ ]]; then fail 'Некорректное имя (1–40 букв a-z, цифр, _ или -, начинается с буквы/цифры)'; fi
 if [[ -n $install_port ]]; then
   [[ $install_port =~ ^[0-9]{4,5}$ ]] || fail 'Порт должен быть от 1024 до 65535'
@@ -32,9 +31,16 @@ if [[ -n $install_port ]]; then
 fi
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 launcher="$script_dir/../local/portal_local.py"
+# Keep omission intact so init can reuse the source pinned in an existing marker.
+source_to_check=$portal_source
+if [[ -z $source_to_check && ! -f $workspace/.portal-local.json ]]; then source_to_check="$script_dir/.."; fi
+if [[ -n $source_to_check ]]; then
+  [[ -f $source_to_check/docker-compose.yaml && -f $source_to_check/Dockerfile ]] || fail 'portal-source должен содержать docker-compose.yaml и Dockerfile продукта; укажите --portal-source PATH'
+fi
 platform=$(uname -s)
 rerun() {
-  printf 'Повторить: bash %q --workspace %q --portal-source %q' "$script_dir/install.sh" "$workspace" "$portal_source"
+  printf 'Повторить: bash %q --workspace %q' "$script_dir/install.sh" "$workspace"
+  [[ -z $portal_source ]] || printf ' --portal-source %q' "$portal_source"
   [[ -z $install_name ]] || printf ' --name %q' "$install_name"
   [[ -z $install_port ]] || printf ' --port %q' "$install_port"
   ((create_admin == 0)) || printf ' --create-admin'
@@ -59,7 +65,7 @@ if [[ $mode == plan ]]; then
   else
     printf '%s\n' 'При необходимости: sudo apt-get install python3 git ca-certificates curl; официальный Docker apt repo/key; docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; systemctl enable --now docker.' 'При необходимости: добавить текущего пользователя в группу docker; завершить с кодом 20 для перелогина.'
   fi
-  printf '%s\n' 'Затем launcher init, doctor, up; ожидание /api/health; автоматическая admin-init: admin/admin только при пустой базе пользователей, существующие учётные записи сохраняются. Затем agent-init и agent-start: токен host-агента сохраняется, фоновый worker запускается автоматически.'
+  printf '%s\n' 'Затем launcher init, doctor, up; ожидание /api/health; автоматическая admin-init: admin со случайным паролем только при пустой базе пользователей (пароль выводится один раз при создании), существующие учётные записи сохраняются. Затем agent-init и agent-start: токен host-агента сохраняется, фоновый worker запускается автоматически.'
   rerun
   exit 0
 fi
@@ -174,7 +180,9 @@ done
 init_args=(init)
 [[ -z $install_name ]] || init_args+=(--name "$install_name")
 [[ -z $install_port ]] || init_args+=(--port "$install_port")
-"$python_bin" "$launcher" --workspace "$workspace" --portal-source "$portal_source" "${init_args[@]}"
+source_args=()
+[[ -z $portal_source ]] || source_args+=(--portal-source "$portal_source")
+"$python_bin" "$launcher" --workspace "$workspace" "${source_args[@]}" "${init_args[@]}"
 "$python_bin" "$launcher" --workspace "$workspace" doctor
 "$python_bin" "$launcher" --workspace "$workspace" up
 "$python_bin" "$script_dir/wait_health.py" --workspace "$workspace" --timeout 180

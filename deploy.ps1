@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Workspace,
-    [Parameter(Mandatory = $true)][string]$PortalSource,
+    [string]$PortalSource = '',
     [string]$Name = '',
     [string]$Port = '',
     [switch]$CreateAdmin,
@@ -14,7 +14,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 function Quote-PowerShell([string]$Value) { return "'" + $Value.Replace("'", "''") + "'" }
 function Show-Rerun {
-    $command = "powershell -NoProfile -ExecutionPolicy Bypass -File $(Quote-PowerShell $PSCommandPath) -Workspace $(Quote-PowerShell $Workspace) -PortalSource $(Quote-PowerShell $PortalSource)"
+    $command = "powershell -NoProfile -ExecutionPolicy Bypass -File $(Quote-PowerShell $PSCommandPath) -Workspace $(Quote-PowerShell $Workspace)"
+    if ($PortalSource) { $command += " -PortalSource $(Quote-PowerShell $PortalSource)" }
     if ($Name) { $command += " -Name $(Quote-PowerShell $Name)" }
     if ($Port) { $command += " -Port $(Quote-PowerShell $Port)" }
     if ($CreateAdmin) { $command += ' -CreateAdmin' }
@@ -33,7 +34,8 @@ function Refresh-ProcessPath {
 try {
     if ($Plan -and $CheckOnly) { throw 'Выберите только один режим: -Plan или -CheckOnly' }
     $installerArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-        (Join-Path $PSScriptRoot 'installer/install.ps1'), '-Workspace', (Join-Path $Workspace 'portal'), '-PortalSource', $PortalSource)
+        (Join-Path $PSScriptRoot 'installer/install.ps1'), '-Workspace', (Join-Path $Workspace 'portal'))
+    if ($PortalSource) { $installerArguments += @('-PortalSource', $PortalSource) }
     if ($Name) { $installerArguments += @('-Name', $Name) }
     if ($Port) { $installerArguments += @('-Port', $Port) }
     if ($CreateAdmin) { $installerArguments += '-CreateAdmin' }

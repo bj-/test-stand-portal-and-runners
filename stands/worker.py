@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from . import runtime, stand
+from . import runtime, stand, data_modules
 
 
 class LeaseLost(stand.StandError):
@@ -49,7 +49,7 @@ def private_path(value, label, *, directory=False):
 
 def validate_config(value):
     stand.obj(value, ('schema_version', 'portal_url', 'token_file', 'host_id', 'work_root', 'catalogs'),
-              ('fetch', 'poll_seconds', 'timeout', 'ref_source', 'publish_ip'), label='worker config')
+              ('fetch', 'poll_seconds', 'timeout', 'ref_source', 'publish_ip', 'managed_run_overlays'), label='worker config')
     stand.version(value['schema_version'], 'worker config')
     config = dict(value)
     url = urllib.parse.urlsplit(stand.string(config['portal_url'], 'portal_url'))
@@ -87,6 +87,14 @@ def validate_config(value):
         if (stand.contains(root, config['work_root']) or stand.contains(config['work_root'], root)
                 or stand.contains(root, config['token_file'])):
             stand.fail('worker private files must be outside source checkouts')
+    if 'managed_run_overlays' in config:
+        managed = private_path(config['managed_run_overlays'], 'managed_run_overlays', directory=True)
+        for root in [*roots, config['work_root']]:
+            if stand.contains(root, managed) or stand.contains(managed, root):
+                stand.fail('managed_run_overlays must be outside code, repositories and worker workspace')
+        if any((parent / '.git').exists() for parent in (managed, *managed.parents)):
+            stand.fail('managed_run_overlays must be outside Git checkouts')
+        config['managed_run_overlays'] = managed
     config.setdefault('fetch', False)
     if type(config['fetch']) is not bool:
         stand.fail('fetch: boolean required')
@@ -194,7 +202,7 @@ def fetched_ref(path, requested):
 
 def terminal_stages(records):
     return [{key: value for key, value in record.items() if key in ('name', 'status', 'started_at', 'finished_at')}
-            for record in records if record.get('name') in stand.STAGES]
+            for record in records if record.get('name') in stand.STAGE_ORDER]
 
 
 class Worker:
@@ -228,6 +236,28 @@ class Worker:
             value = stand.read_json(path)
             return isinstance(value, dict) and value.get('run_id') == self.run_id
         return False
+
+    def control_log(self, text):
+        lines = []
+        private_block = False
+        for line in str(text).splitlines()[-100:]:
+            if re.search(r'-----BEGIN .*PRIVATE KEY-----', line):
+                private_block = True
+            if private_block:
+                if re.search(r'-----END .*PRIVATE KEY-----', line):
+                    private_block = False
+                lines.append('[sensitive line redacted]')
+                continue
+            if re.search(r'(?i)password|passwd|secret|token|authorization|credential|cookie|private.key|connection.string|api.?key|access.?key|bearer', line):
+                lines.append('[sensitive line redacted]')
+                continue
+            line = self.redact(line)
+            line = re.sub(r'[A-Za-z][A-Za-z0-9+.-]*://[^\s<>"\']+', '[url]', line)
+            line = re.sub(r'(?i)\b[A-Z]:[\\/][^\s<>"\']+', '[path]', line)
+            line = re.sub(r'(?<![A-Za-z0-9_])/(?:[^\s/<>"\']+/)*[^\s<>"\']+', '[path]', line)
+            line = re.sub(r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b', '[token]', line)
+            lines.append(line)
+        return '\n'.join(lines)[-12000:]
 
     def status_loop(self):
         while not self.done.is_set():
@@ -291,7 +321,7 @@ class Worker:
 
     def prepare(self, spec, workspace):
         stand.obj(spec, ('schema_version', 'stand', 'project', 'template', 'template_sha256', 'request', 'target_host',
-                        'environments', 'ports', 'lock', 'parent_job_id'), ('snapshot', 'publish_ip'), label='stand job spec')
+                        'environments', 'ports', 'lock', 'parent_job_id'), ('snapshot', 'publish_ip', 'test_data'), label='stand job spec')
         stand.version(spec['schema_version'], 'stand job spec')
         if type(spec['lock']) is not bool or not isinstance(spec['environments'], list):
             stand.fail('worker: invalid stand metadata')
@@ -310,10 +340,20 @@ class Worker:
             stand.fail('worker: project has no local repository catalog')
         repositories = stand.validate_catalog(catalog)
         selected, parameters = stand.validate_request(template, spec['request'], repositories)
+        entries = stand.validate_test_data(template, spec['request']['profile'], spec.get('test_data', []))
+        for entry in entries:
+            module = template['data_modules'][entry['module']]
+            if 'run_binding' in module:
+                managed = self.config.get('managed_run_overlays')
+                if managed is None:
+                    stand.fail('worker: run_binding requires configured managed_run_overlays')
+                data_modules.overlay_path(managed, spec['project'], spec['stand'], module['run_binding'])
         identity = {'stand': spec['stand'], 'project': spec['project'], 'template_sha256': spec['template_sha256'],
                     'profile': spec['request']['profile'], 'ports': spec['ports'], 'target_host': self.config['host_id']}
         if publish_ip != '127.0.0.1':
             identity['publish_ip'] = publish_ip
+        if entries:
+            identity['test_data_sha256'] = hashlib.sha256(stand.canonical(entries)).hexdigest()
         metadata = workspace / '.worker-identity.json'
         retry = 'snapshot' in spec
         if retry:
@@ -362,6 +402,8 @@ class Worker:
         self.last_lease = 0
         if job['kind'] == 'stand-delete':
             return self.delete_job(job['spec'])
+        if job['kind'] == 'stand-control':
+            return self.control_job(job['spec'])
         workspace, state, accepted, started = None, None, False, False
         stages = []
         try:
@@ -391,10 +433,13 @@ class Worker:
                 self.progress(record)
             state = runtime.run(workspace, retry=retry, timeout=self.config['timeout'], ports=spec['ports'],
                                 progress=progress, cancel=self.checkpoint,
-                                publish_ip=self.config.get('publish_ip', '127.0.0.1'))
+                                publish_ip=self.config.get('publish_ip', '127.0.0.1'),
+                                test_data=spec.get('test_data', []),
+                                data_context={'project': spec['project'], 'stand': spec['stand'], 'target_host': self.config['host_id']},
+                                managed_run_overlays=self.config.get('managed_run_overlays'))
             self.check()
             self.logs(workspace)
-            self.upload_artifacts(workspace, state, required=True)
+            self.upload_artifacts(workspace, state, required=state.get('status') != 'limited')
             self.check()
             self.api.request('POST', self.endpoint('finish'), {'status': 'done', 'stages': terminal_stages(state['attempts'][-1]['stages']),
                 'images': state.get('images', []), 'output_bindings': state.get('output_bindings', {})})
@@ -421,6 +466,46 @@ class Worker:
             self.active_workspace = None
 
 
+    def control_job(self, spec):
+        path = 'jobs/' + self.current + '/finish'
+        def publish(text):
+            response = self.api.request('POST', 'jobs/' + self.current + '/log', {'text': text})
+            if not isinstance(response, dict) or type(response.get('cancel')) is not bool:
+                raise LeaseLost('worker: invalid control log acknowledgement')
+            self.cancelled |= response['cancel']
+            self.check()
+        try:
+            stand.obj(spec, ('schema_version', 'stand', 'project', 'target_host', 'action', 'lock', 'parent_job_id'), label='stand control spec')
+            stand.version(spec['schema_version'], 'stand control spec')
+            stand_id = stand.identifier(spec['stand'], 'stand id')
+            if (spec['target_host'] != self.config['host_id'] or type(spec['lock']) is not bool
+                    or spec['parent_job_id'] is not None or not isinstance(spec['project'], str) or not spec['project']
+                    or spec['action'] not in ('restart', 'status', 'logs')
+                    or spec['action'] == 'restart' and not spec['lock']):
+                stand.fail('worker: invalid stand control ownership/metadata')
+            workspace = runtime.safe_path(self.root, self.root / 'stands' / stand_id)
+            self.check()
+            result = runtime.control(workspace, stand_id=stand_id, project=spec['project'], target_host=self.config['host_id'],
+                                     action=spec['action'], timeout=self.config['timeout'], cancel=self.checkpoint)
+            self.check()
+            for service, value in result.get('logs', []):
+                text = self.control_log(value)
+                publish(service + ':\n' + text)
+            if 'services' in result:
+                publish(json.dumps(result, ensure_ascii=False))
+            self.api.request('POST', path, {'status': 'done'})
+            return 0
+        except LeaseLost:
+            raise
+        except (Exception, KeyboardInterrupt) as exc:
+            self.api.request('POST', path, {'status': 'cancelled' if isinstance(exc, runtime.Cancelled) else 'failed',
+                                          'message': self.redact(exc)[-2000:]})
+            return 2
+        finally:
+            self.current = None
+            self.active_workspace = None
+
+
     def delete_job(self, spec):
         try:
             stand.obj(spec, ('schema_version', 'stand', 'project', 'target_host', 'lock', 'parent_job_id', 'workspace_required'), label='stand delete spec')
@@ -434,6 +519,11 @@ class Worker:
             self.check()
             runtime.delete(workspace, stand_id=stand_id, project=spec['project'], target_host=self.config['host_id'],
                            workspace_required=spec['workspace_required'], timeout=self.config['timeout'], cancel=self.checkpoint)
+            self.check()
+            if self.config.get('managed_run_overlays') is not None and workspace.exists():
+                _, snapshot, _ = runtime.load(workspace)
+                data_modules.cleanup(self.config['managed_run_overlays'], snapshot, project=spec['project'], stand_id=stand_id,
+                                     target_host=self.config['host_id'], workspace=workspace)
             self.check()
             self.api.request('POST', self.endpoint('delete-finish'), {'status': 'done'})
             return 0
@@ -455,7 +545,8 @@ class Worker:
             try:
                 while not self.stopped():
                     try:
-                        job = self.api.request('POST', 'claim', {'capabilities': ['stand-template-v1', 'stand-template-v1-delete'], 'host_id': self.config['host_id']})
+                        job = self.api.request('POST', 'claim', {'capabilities': ['stand-template-v1', 'stand-template-v1-delete',
+                            'stand-template-v1-liveness', 'stand-template-v1-control', 'stand-template-v1-data'], 'host_id': self.config['host_id']})
                     except LeaseLost:
                         if once:
                             raise

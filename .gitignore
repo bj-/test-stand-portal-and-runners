@@ -1,5 +1,6 @@
 .env
 *.env
+.env.*
 !.env.example
 projects.yaml
 .portal-local.json
@@ -8,9 +9,19 @@ __pycache__/
 .pytest_cache/
 .venv/
 node_modules/
+dist/
+*.egg-info/
+.repository-secrets/
+.stand-repositories/
+.codex/
+/docs/runs/
 data/
 results/
 artifacts/
+*.db
+*.sqlite
+*.sqlite3
+*.dump
 *.log
 *.pem
 *.key

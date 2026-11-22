@@ -47,6 +47,7 @@ Compose executor. Запускаемый шаблон: [template-demo](../exampl
 | `compose` | `{component, path, required_services}`; путь относительно context компонента, файл должен существовать в выбранном коммите |
 | `profiles` | Map профилей; `laptop` обязателен. Каждый `{services, resources: {cpus, memory_mb}}` содержит все required_services, положительные CPU и целое число MiB |
 | `lifecycle` | Ровно `build`, `deploy`, `migrate`, `seed`, `healthcheck`, `smoke`, в этом порядке при будущем выполнении. Массивы `{component, argv}`; только migrate/seed могут быть пустыми |
+| `liveness` (необязательно) | Каталог минимальных проверок после ошибки smoke в формате `{service: {component, argv}}`. Агент выполняет команды сервисов активного профиля. Для статуса `limited` нужны успешные результаты всех выбранных проверок. См. [правила исполнения](RUNTIME.md#минимальная-проверка-отклика-после-smoke). |
 | `parameters` | Map имён в `{type, default?, enum?}`; тип string/integer/number/boolean, без default значение обязательно в request |
 | `secret_refs` | Уникальные имена ссылок на секреты, без значений; разрешаются только будущим executor из локальной установки |
 | `smoke` | `{runner, env, suite}`; runner — component ID, env — безопасное имя файла окружения (может начинаться цифрой), suite — переносимый относительный путь к набору проверок |

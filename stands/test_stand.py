@@ -41,6 +41,19 @@ class ContractTests(unittest.TestCase):
         self.template["smoke"]["suite"] = "suites/API/smoke.yaml"
         self.assertEqual(stand.validate_template(self.template)["version"], "1.0.0")
 
+    def test_optional_liveness_contract_and_legacy(self):
+        self.assertEqual(stand.STAGES, ("build", "deploy", "migrate", "seed", "healthcheck", "smoke"))
+        stand.validate_template(self.template)
+        command = {"component": "smoke", "argv": ["docker", "compose", "run", "--rm", "--no-deps", "runner"]}
+        self.template["liveness"] = {"api": command}
+        stand.validate_template(self.template)
+        for probes in ({}, [], {"absent": command}, {"api": {"component": "absent", "argv": ["docker"]}},
+                       {"api": {"component": "smoke", "argv": []}},
+                       {"api": {"component": "smoke", "argv": ["docker", None]}},
+                       {"api": {**command, "extra": True}}):
+            with self.subTest(probes=probes), self.assertRaises(stand.StandError):
+                stand.validate_template({**self.template, "liveness": probes})
+
     def test_bad_template_boundaries(self):
         cases = [
             ("unknown root", lambda t: t.update(command=["rm"])),

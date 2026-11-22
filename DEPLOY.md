@@ -7,10 +7,10 @@
 
 ## Windows
 
-Откройте PowerShell в корне этого репозитория. Пример для соседнего клона `test-portal`.
+Откройте PowerShell в корне этого репозитория.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy.ps1 -Workspace C:\stand-lab -PortalSource ..\test-portal
+powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy.ps1 -Workspace C:\stand-lab
 ```
 
 При первом запуске выберите новый внешний каталог `C:\stand-lab`. Для проверки
@@ -20,30 +20,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy.ps1 -Workspace C:\s
 
 Installer запрашивает необходимые права установки. Код 20 означает, что нужно
 выполнить напечатанное действие (например, reboot или первый запуск Docker
-Desktop), затем повторить ту же команду. Не требуется запускать Codex.
-На новой установке автоматически создаётся `admin/admin`, без запроса в терминале.
-После входа можно сменить пароль или выбрать «Оставить как есть». Отказ сохраняется,
-позднее смена доступна в профиле. При наличии пользователей installer ничего
-не сбрасывает: используйте прежний пароль. `-CreateAdmin` / `--create-admin`
-сохранены для совместимости, их больше не требуется указывать.
+Desktop), затем повторить ту же команду.
+При пустой базе установщик создаёт `admin` со случайным паролем и один раз
+показывает его в терминале. При повторном запуске используйте пароль
+существующей учётки. Сменить пароль можно в профиле.
 Подробнее о зависимостях и поддерживаемых ОС: [installer](installer/README.md).
 
 ## Ubuntu / macOS
 
-Из checkout комплекта, указав фактический путь к checkout портала:
+Из корня этого репозитория:
 
 ```bash
-bash deploy.sh --workspace "$HOME/stand-lab" --portal-source "$HOME/src/test-portal"
+bash deploy.sh --workspace "$HOME/stand-lab"
 ```
 
 Режимы `--dry-run`, `--check`, `--name`, `--port` соответствуют Windows-флагам.
+Для собственного совместимого checkout портала передайте `--portal-source`
+или `-PortalSource`. Существующая установка использует сохранённый путь.
 Для первой сборки нужен интернет: базовые Python/Node images, зависимости портала
 и Allure 3.33.0. Docker должен использовать Linux containers и локальный daemon.
 
 ## Что проверить после запуска
 
 - Портал открывается по адресу, который напечатал installer (по умолчанию
-  `http://127.0.0.1:8080`); первый вход `admin/admin`, для существующей установки — прежние данные.
+  `http://127.0.0.1:8080`). Для первого входа используйте пароль из терминала.
 - Финальный JSON содержит `status: success` и `output_bindings.baseUrl` — адрес
   учебного API на динамическом loopback-порту. `/health` отвечает `{"status":"ok"}`,
   `/items` содержит запись `demo`, `/version` показывает выбранную ветку.
@@ -132,7 +132,7 @@ Installer теперь выполняет также `agent-init` и `agent-star
 
 Настройки находятся в `<workspace портала>/agent/config.json` и `agent/hosts.json`.
 Каталоги приложений первоначально пусты. Порядок подключения clones, протокол
-и API повторов: `test-portal/docs/local-stand-agent.md`.
+и API повторов описаны в [документации локального агента](docs/local-stand-agent.md).
 Standalone-пример из этого deploy-скрипта по-прежнему запускается напрямую;
 для управляемого экземпляра используйте каталог/API портала.
 

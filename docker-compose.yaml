@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: portal
+      POSTGRES_USER: portal
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте в .env}
+    volumes:
+      - ${PORTAL_DATA:-./data}/postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portal -d portal"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  portal:
+    build:
+      context: .
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-docker.io/library}
+    restart: unless-stopped
+    environment:
+      PORTAL_DATABASE_URL: postgresql+psycopg://portal:${POSTGRES_PASSWORD}@postgres:5432/portal
+      PORTAL_PROJECTS: /config/projects.yaml
+      PORTAL_COOKIE_SECURE: ${PORTAL_COOKIE_SECURE:-false}
+      PORTAL_ARTIFACTS: /data/artifacts
+    ports:
+      - "${PORTAL_BIND:-127.0.0.1:8080}:8080"
+    volumes:
+      - ${PROJECTS_FILE:-./projects.yaml}:/config/projects.yaml:ro
+      - ${RESULTS_ROOT:-./data/results}:/data/results:ro
+      - ${PORTAL_DATA:-./data}/artifacts:/data/artifacts
+    depends_on:
+      postgres: { condition: service_healthy }

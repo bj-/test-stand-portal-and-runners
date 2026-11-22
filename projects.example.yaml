@@ -1,0 +1,94 @@
+# Копия - projects.yaml, в git не попадает: проекты относятся к установке клиента.
+projects:
+  ACME:
+    title: Пример проекта
+    results: /data/results/acme-results   # клон репозитория результатов
+    tests: /data/results/acme-tests       # клон репозитория тестов: список наборов для формы запуска
+    tests_url: https://git.example/acme-tests.git
+    results_url: https://git.example/acme-results.git
+    environments: [dev, main]             # белый список: только эти окружения можно запускать из портала
+    # Стенды (ADR 0002, п. 5): портал показывает описание и ставит действия в очередь, команды выполняет агент
+    # с возможностью stand-host в каталоге workdir. Действия: deploy (с параметрами), restart, reset (разрушающее,
+    # с подтверждением), status, logs; у стенда только те, для которых задана команда. Значения параметров приходят
+    # в команду переменными окружения, в текст команды не подставляются.
+    stands:
+      dev:
+        title: Стенд dev
+        description: |                      # Markdown
+          Ветки **dev** всех сервисов.
+
+          - вход: `admin` / `пароль`
+        problem: ""                         # Markdown: известная проблема - стенд помечен нерабочим, пока текст есть
+        environments: [dev]                 # окружения тестов на этом стенде: прогон и пересборка не идут одновременно
+        smoke: {suite: suites/smoke.yaml, env: dev}   # прогон после пересборки, перезапуска и сброса
+        info_file: /config/stands/dev.info.json        # сведения о сборке и проверка стенда, пишет сам стенд
+        secrets_files: [/config/stands/dev.env]        # KEY=VALUE для ${...} в access; в конфигурацию не копируются
+        access:                             # видят только access_roles (по умолчанию admin, tester, developer)
+          - {title: База, value: "db.example:5432/${DB_NAME}"}
+          - {title: Пароль, value: "${DB_PASSWORD}", secret: true}
+        links:
+          - {title: API, url: "http://stand.example:3000"}
+        workdir: /opt/stands/acme
+        # Для включения установите адаптер и эти доверенные обёртки на stand-host.
+        # Каждая обёртка задаёт PORTAL_DATA_* подключения из окружения установки.
+        # Никаких DSN/паролей в manifest, JSON набора или браузере.
+        test_data:
+          primary:
+            title: Основная база
+            format: relational-v1
+            apply: /opt/stands/acme/bin/dev-primary-data
+            inspect: /opt/stands/acme/bin/dev-primary-data
+            timeout: 120
+          analytics:
+            title: Аналитическая база
+            format: relational-v1
+            apply: /opt/stands/acme/bin/dev-analytics-data
+            inspect: /opt/stands/acme/bin/dev-analytics-data
+            timeout: 120
+        params:
+          - {name: APP_REF, title: "app: ветка или коммит", default: dev}
+        commands:
+          deploy: ./build.sh dev && ./stand.sh dev deploy
+          restart: ./stand.sh dev up
+          reset: ./stand.sh dev reset
+          status: ./stand.sh dev ps
+          logs: ./stand.sh dev logs --tail 200
+
+      # Один проектный набор можно применить и здесь; версия/привязка выбирается отдельно.
+      main:
+        title: Стенд main
+        environments: [main]
+        workdir: /opt/stands/acme
+        test_data:
+          primary:
+            title: Основная база main
+            format: relational-v1
+            apply: /opt/stands/acme/bin/main-primary-data
+            inspect: /opt/stands/acme/bin/main-primary-data
+            timeout: 120
+
+  # Мобильные автотесты (ADR 0003): pytest на машине агента с возможностью appium-android, телефон по USB.
+  # Наборы - suites/*.yaml репозитория тестов: description, paths, markers, args. Окружение прогона (DEVICE_UDID,
+  # APPIUM_URL, учётки) - в <AGENT_ENV_DIR>/MOB.env на машине агента.
+  MOB:
+    title: Мобильное приложение
+    results: /data/results/mob-results
+    tests: /data/results/mob-tests
+    tests_url: https://git.example/mobile-autotests.git
+    results_url: https://git.example/mobile-results.git
+    environments: [dev]
+    runner: pytest
+    capability: appium-android
+
+# Справка на «Обзоре»: ссылки и страницы-инструкции (Markdown на машине портала). Портал отдаёт только
+# перечисленные здесь файлы.
+help:
+  pages:
+    https: {title: "HTTPS: сертификат", file: /config/docs/https.md}
+  sections:
+    - title: Начало работы
+      items:
+        - {title: Сертификат центра, url: "http://stand.example/ca.crt", note: "один раз поставить в доверенные"}
+        - {title: Как установить сертификат, page: https}
+# У стенда также: seed_info - Markdown «что засевается» для страницы засева (действие seed открывает её,
+# засев - только кнопкой на ней).

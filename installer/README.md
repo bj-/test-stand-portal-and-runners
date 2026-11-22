@@ -12,37 +12,38 @@ PostgreSQL, привязывает отдельный ключ агента к �
 программ и поддерживаемая Docker платформа с виртуализацией. Сборка образа
 загружает зависимости продукта из сети; это не автономная установка.
 
-Получите ZIP этого репозитория и ZIP или клон продукта `test-portal` доступным
-вам способом. Распакуйте в **разные** каталоги. Git для получения ZIP не нужен;
-bootstrap установит Git для дальнейшей работы. Приватные исходники installer
-сам не скачивает. `--portal-source`/`-PortalSource` указывает на корень продукта,
-где находятся `Dockerfile` и `docker-compose.yaml`.
+Получите ZIP или checkout этого репозитория. Исходники портала входят в поставку:
+по умолчанию используется корень checkout с `Dockerfile` и `docker-compose.yaml`.
+Git для получения ZIP не нужен; bootstrap установит Git для дальнейшей работы.
+Для внешнего checkout задайте `--portal-source PATH` / `-PortalSource PATH`.
+Повтор без этого параметра использует источник, уже записанный в workspace;
+явно переданный путь должен совпадать с сохранённым. Installer исходники не клонирует.
 
-Откройте терминал в распакованном `test-stand-portal-and-runners`. Выберите одну
-из трёх команд для своей ОС, подставив фактический путь к исходникам продукта.
-Workspace должен быть новым каталогом вне обоих наборов исходников.
+Откройте терминал в распакованном `test-stand-portal-and-runners`. Выберите команду
+для своей ОС. Workspace должен находиться вне исходников комплекта и внешнего портала.
 
 Windows, обычный PowerShell (Windows PowerShell 5.1 поддерживается):
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\installer\install.ps1 -Workspace "C:\Portal work\demo" -PortalSource "C:\src\test-portal" -CreateAdmin
+powershell -NoProfile -ExecutionPolicy Bypass -File .\installer\install.ps1 -Workspace "C:\Portal work\demo" -CreateAdmin
 ```
 
 Ubuntu 24.04 или новее, обычный пользователь с `sudo`:
 
 ```bash
-bash installer/install.sh --workspace "$HOME/portal work/demo" --portal-source "$HOME/src/test-portal" --create-admin
+bash installer/install.sh --workspace "$HOME/portal work/demo" --create-admin
 ```
 
 macOS, обычный пользователь с правами установки программ:
 
 ```bash
-bash installer/install.sh --workspace "$HOME/portal work/demo" --portal-source "$HOME/src/test-portal" --create-admin
+bash installer/install.sh --workspace "$HOME/portal work/demo" --create-admin
 ```
 
 После готовности портала installer автоматически вызывает `admin-init`. При пустой
-таблице пользователей создаётся `admin/admin`, без ввода в терминале. При наличии
-учёток они остаются неизменными. `-CreateAdmin` / `--create-admin` больше не нужны,
+таблице пользователей создаётся `admin` со случайным паролем, без ввода в терминале.
+CLI показывает пароль в обычном терминале только при создании: сохраните его для
+первого входа. Повтор не выводит пароль и сохраняет существующие учётки. `-CreateAdmin` / `--create-admin` больше не нужны,
 но принимаются для совместимости старых команд. После входа можно сменить пароль
 или выбрать «Оставить как есть»; отказ сохраняется, позже смена доступна в профиле.
 После запуска и HTTP health выводится адрес портала:
@@ -93,12 +94,12 @@ Microsoft Store и повторите bootstrap.
 workspace:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\installer\install.ps1 -Workspace "C:\Portal work\demo" -PortalSource "C:\src\test-portal" -Plan
+powershell -NoProfile -ExecutionPolicy Bypass -File .\installer\install.ps1 -Workspace "C:\Portal work\demo" -Plan
 # Для проверки текущих зависимостей замените -Plan на -CheckOnly.
 ```
 
 ```bash
-bash installer/install.sh --workspace "$HOME/portal work/demo" --portal-source "$HOME/src/test-portal" --dry-run
+bash installer/install.sh --workspace "$HOME/portal work/demo" --dry-run
 # Для проверки текущих зависимостей замените --dry-run на --check.
 ```
 

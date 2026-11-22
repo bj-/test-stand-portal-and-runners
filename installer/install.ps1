@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Workspace,
-    [Parameter(Mandatory = $true)][string]$PortalSource,
+    [string]$PortalSource = '',
     [string]$Name = '',
     [string]$Port = '',
     [switch]$CreateAdmin,
@@ -16,7 +16,8 @@ $Launcher = Join-Path $PSScriptRoot '../local/portal_local.py'
 
 function Quote-PowerShell([string]$Value) { return "'" + $Value.Replace("'", "''") + "'" }
 function Show-Rerun {
-    $command = "powershell -NoProfile -ExecutionPolicy Bypass -File $(Quote-PowerShell $PSCommandPath) -Workspace $(Quote-PowerShell $Workspace) -PortalSource $(Quote-PowerShell $PortalSource)"
+    $command = "powershell -NoProfile -ExecutionPolicy Bypass -File $(Quote-PowerShell $PSCommandPath) -Workspace $(Quote-PowerShell $Workspace)"
+    if ($PortalSource) { $command += " -PortalSource $(Quote-PowerShell $PortalSource)" }
     if ($Name) { $command += " -Name $(Quote-PowerShell $Name)" }
     if ($Port) { $command += " -Port $(Quote-PowerShell $Port)" }
     if ($CreateAdmin) { $command += ' -CreateAdmin' }
@@ -99,14 +100,19 @@ function Ensure-WSL {
 
 try {
     if ($CheckOnly -and $Plan) { throw 'Выберите только один режим: -CheckOnly или -Plan' }
-    if (-not (Test-Path -LiteralPath (Join-Path $PortalSource 'docker-compose.yaml') -PathType Leaf) -or
-        -not (Test-Path -LiteralPath (Join-Path $PortalSource 'Dockerfile') -PathType Leaf)) { throw 'PortalSource должен содержать docker-compose.yaml и Dockerfile продукта' }
+    # Leave an omitted source unbound: init preserves an existing workspace's source.
+    $sourceToCheck = $PortalSource
+    if (-not $sourceToCheck -and -not (Test-Path -LiteralPath (Join-Path $Workspace '.portal-local.json') -PathType Leaf)) {
+        $sourceToCheck = Join-Path $PSScriptRoot '..'
+    }
+    if ($sourceToCheck -and (-not (Test-Path -LiteralPath (Join-Path $sourceToCheck 'docker-compose.yaml') -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (Join-Path $sourceToCheck 'Dockerfile') -PathType Leaf))) { throw 'PortalSource должен содержать docker-compose.yaml и Dockerfile продукта; укажите -PortalSource PATH' }
     if ($Name -and $Name -cnotmatch '^[a-z0-9][a-z0-9_-]{0,39}$') { throw 'Некорректное Name: 1–40 букв a-z, цифр, _ или -, начинается с буквы/цифры' }
     if ($Port -and ($Port -notmatch '^\d{4,5}$' -or [int]$Port -lt 1024 -or [int]$Port -gt 65535)) { throw 'Port должен быть от 1024 до 65535' }
     if ($Plan) {
         Write-Host 'План: Python >=3.12 и Git (winget Python.Python.3.12, Git.Git при отсутствии); WSL; Docker Desktop (Docker.DockerDesktop при отсутствии).'
         Write-Host 'Первый запуск Docker и лицензионное соглашение завершаете самостоятельно. При необходимости перезагрузки выход 20, без автоматического reboot.'
-        Write-Host 'Затем init, doctor, up через launcher; ожидание /api/health; автоматическая admin-init: admin/admin только при пустой базе пользователей, существующие учётные записи сохраняются. Затем agent-init и agent-start: токен host-агента сохраняется, фоновый worker запускается автоматически.'
+        Write-Host 'Затем init, doctor, up через launcher; ожидание /api/health; автоматическая admin-init: admin со случайным паролем только при пустой базе пользователей (пароль выводится один раз при создании), существующие учётные записи сохраняются. Затем agent-init и agent-start: токен host-агента сохраняется, фоновый worker запускается автоматически.'
         Show-Rerun
         exit 0
     }
@@ -142,7 +148,9 @@ try {
         if ([DateTime]::UtcNow -ge $deadline) { Stop-ForContinuation 'Docker пока недоступен. Откройте Docker Desktop, завершите первый запуск и переключитесь в Linux containers.' }
         Start-Sleep -Seconds 3
     }
-    $initArguments = @($Launcher, '--workspace', $Workspace, '--portal-source', $PortalSource, 'init')
+    $initArguments = @($Launcher, '--workspace', $Workspace)
+    if ($PortalSource) { $initArguments += @('--portal-source', $PortalSource) }
+    $initArguments += 'init'
     if ($Name) { $initArguments += @('--name', $Name) }
     if ($Port) { $initArguments += @('--port', $Port) }
     Invoke-Python $initArguments

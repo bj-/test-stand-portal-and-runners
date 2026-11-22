@@ -23,6 +23,7 @@ class StandError(ValueError):
 
 
 STAGES = ("build", "deploy", "migrate", "seed", "healthcheck", "smoke")
+STAGE_ORDER = (*STAGES, "liveness")
 ID = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}\Z")
 SHA = re.compile(r"(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})\Z")
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
@@ -115,9 +116,21 @@ def typed(value, kind, label):
         fail(f"{label}: nonfinite number")
 
 
+def validate_command(command, components):
+    obj(command, ("component", "argv"), label="command")
+    if identifier(command["component"], "command.component") not in components:
+        fail("command.component: unknown component")
+    if not isinstance(command["argv"], list) or not command["argv"]:
+        fail("argv: expected nonempty array")
+    for arg in command["argv"]:
+        if not isinstance(arg, str) or "\x00" in arg:
+            fail("argv: strings without NUL required")
+    string(command["argv"][0], "argv[0]")
+
+
 def validate_template(t):
     obj(t, ("schema_version", "id", "version", "components", "compose", "profiles",
-            "lifecycle", "parameters", "secret_refs", "smoke", "output_bindings"), label="template")
+            "lifecycle", "parameters", "secret_refs", "smoke", "output_bindings"), ("liveness", "data_modules"), label="template")
     version(t["schema_version"], "template")
     identifier(t["id"], "template.id")
     if not isinstance(t["version"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}", t["version"]):
@@ -180,15 +193,16 @@ def validate_template(t):
         if not isinstance(commands, list) or (not commands and stage not in ("migrate", "seed")):
             fail(f"lifecycle.{stage}: expected commands (migrate/seed may be empty)")
         for command in commands:
-            obj(command, ("component", "argv"), label="command")
-            if identifier(command["component"], "command.component") not in components:
-                fail("command.component: unknown component")
-            if not isinstance(command["argv"], list) or not command["argv"]:
-                fail("argv: expected nonempty array")
-            for arg in command["argv"]:
-                if not isinstance(arg, str) or "\x00" in arg:
-                    fail("argv: strings without NUL required")
-            string(command["argv"][0], "argv[0]")
+            validate_command(command, components)
+    if "liveness" in t:
+        probes = t["liveness"]
+        if not isinstance(probes, dict) or not probes:
+            fail("liveness: expected nonempty object")
+        services = {service for profile in t["profiles"].values() for service in profile["services"]}
+        for service, command in probes.items():
+            if identifier(service, "liveness service") not in services:
+                fail("liveness: service must belong to a profile")
+            validate_command(command, components)
     if not isinstance(t["parameters"], dict):
         fail("parameters: expected object")
     for name, spec in t["parameters"].items():
@@ -232,7 +246,67 @@ def validate_template(t):
         path = string(binding["path"], "output binding.path")
         if not path.startswith("/") or path.startswith("//") or any(c in path for c in "\r\n?#\\"):
             fail("output binding.path: expected absolute URL path")
+    modules = t.get("data_modules", {})
+    if not isinstance(modules, dict) or ("data_modules" in t and not 1 <= len(modules) <= 64):
+        fail("data_modules: expected object with 1..64 modules")
+    all_services = {service for profile in t["profiles"].values() for service in profile["services"]}
+    seen_modules, seen_bindings = set(), set()
+    for name, module in modules.items():
+        identifier(name, "data module")
+        relative_path(name, "data module")
+        if name.casefold() in seen_modules:
+            fail("data_modules: case-colliding IDs")
+        seen_modules.add(name.casefold())
+        obj(module, ("service", "format", "argv"), ("title", "run_binding"), label="data module")
+        if identifier(module["service"], "data module.service") not in all_services:
+            fail("data module.service: service must belong to a profile")
+        if not isinstance(module["format"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", module["format"]):
+            fail("data module.format: invalid format")
+        if not isinstance(module["argv"], list) or not module["argv"]:
+            fail("data module.argv: nonempty array required")
+        for arg in module["argv"]:
+            string(arg, "data module.argv")
+        if module["argv"][0].startswith("-"):
+            fail("data module.argv: executable cannot start with '-' ")
+        if "title" in module:
+            title = string(module["title"], "data module.title")
+            if not title.strip() or len(title) > 200 or not title.isprintable():
+                fail("data module.title: expected 1..200 printable characters")
+        if "run_binding" in module:
+            binding = identifier(module["run_binding"], "data module.run_binding")
+            relative_path(binding, "data module.run_binding")
+            if ".." in binding or binding not in t["output_bindings"] or binding.casefold() in seen_bindings:
+                fail("data module.run_binding: unique existing output binding required")
+            seen_bindings.add(binding.casefold())
     return t
+
+
+def validate_test_data(template, profile, entries):
+    """Validate claimed data before any preparation or Docker operations."""
+    if not isinstance(entries, list):
+        fail("test_data: array required")
+    try:
+        size = len(canonical(entries))
+    except (ValueError, TypeError, RecursionError, UnicodeError):
+        fail("test_data: finite JSON payload required")
+    if size > 2 * 1024 * 1024:
+        fail("test_data: combined payload exceeds 2 MiB")
+    selected = template["profiles"][profile]["services"]
+    seen = set()
+    for entry in entries:
+        obj(entry, ("module", "dataset_id", "version", "format", "data"), label="test_data entry")
+        name = identifier(entry["module"], "test_data.module")
+        module = template.get("data_modules", {}).get(name)
+        if name in seen or module is None:
+            fail("test_data: duplicate or unknown module")
+        seen.add(name)
+        if module["service"] not in selected or entry["format"] != module["format"]:
+            fail("test_data: module service/profile/format mismatch")
+        if any(type(entry[key]) is not int or entry[key] <= 0 for key in ("dataset_id", "version")):
+            fail("test_data: positive dataset id/version required")
+        if not isinstance(entry["data"], dict):
+            fail("test_data.data: object required")
+    return entries
 
 
 def validate_parameter(value, spec, name):
