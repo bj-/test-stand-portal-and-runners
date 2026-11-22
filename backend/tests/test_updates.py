@@ -44,6 +44,7 @@ def test_updater_token_is_scoped_even_for_auth_mutations(web, session, control):
         ("PATCH", "/api/users/root", {"active": False}), ("POST", "/api/auth/logout", {}),
         ("POST", "/api/agent/claim", {"capabilities": ["newman"]}),
         ("POST", "/api/auth/password", {"current": "password", "new": "long-password"}),
+        ("PUT", "/api/admin/updates/policy", {"paused": True}),
     ]:
         assert client.request(method, path, json=payload).status_code == 403, path
 
@@ -62,6 +63,34 @@ def test_disabled_and_missing_operations(web, session, monkeypatch):
     assert client.get("/api/admin/updates").json()["enabled"] is False
     assert client.post("/api/admin/updates/check").status_code == 503
     assert client.post("/api/admin/updates/apply").status_code == 503
+    assert client.put("/api/admin/updates/policy", json={"paused": True}).status_code == 503
+
+
+def test_admin_can_pause_and_resume_installation_only_with_supported_worker(web, session, control):
+    admin = user(web, session, "root", "admin")
+    policy = "/api/admin/updates/policy"
+    assert admin.get("/api/admin/updates").json()["pause_supported"] is False
+    assert admin.put(policy, json={"paused": True}).status_code == 503
+    update_control.atomic_json(control / "status.json", {"enabled": True, "pause_supported": True})
+    for invalid in ({"paused": "true"}, {"paused": 1}, {"paused": True, "ref": "other"}):
+        assert admin.put(policy, json=invalid).status_code == 422
+
+    assert admin.put(policy, json={"paused": True}).json() == {"paused": True}
+    worker_client = token_client(web, session, "updater")
+    status = worker_client.get("/api/admin/updates").json()
+    assert status["enabled"] is True and status["pause_supported"] is True and status["paused"] is True
+    assert worker_client.post("/api/admin/updates/apply").status_code == 409
+    assert worker_client.post("/api/admin/updates/check").status_code == 202
+
+    assert admin.put(policy, json={"paused": False}).json() == {"paused": False}
+    saved = json.loads((control / "policy.json").read_text(encoding="utf-8"))
+    assert saved["paused"] is False
+    assert admin.put(policy, json={"paused": False}).status_code == 200
+    response = worker_client.post("/api/admin/updates/apply")
+    assert response.status_code == 202
+    assert "policy_generation" not in response.json()
+    stored = json.loads((control / "requests" / f"{response.json()['id']}.json").read_text(encoding="utf-8"))
+    assert stored["policy_generation"] == saved["generation"]
 
 
 @pytest.mark.parametrize("action", ["check", "apply"])

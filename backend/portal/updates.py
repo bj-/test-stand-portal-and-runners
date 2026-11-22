@@ -1,4 +1,4 @@
-"""Администратор отправляет только check/apply; команды исполняет host updater."""
+"""Настройки и запросы обновлений. Команды выполняет служба на хосте."""
 import json
 import re
 from datetime import UTC, datetime
@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StrictBool
 
 from .auth import ADMIN, UPDATER, Principal, require
 from .update_control import atomic_json, control_dir, maintenance_active
@@ -26,14 +26,20 @@ PHASE_MESSAGES = {
     "done": "Операция завершена.", "failed": "Обновление завершилось ошибкой. Подробности доступны администратору сервера.",
     "error": "Ошибка обновления. Подробности доступны администратору сервера.",
     "rolled_back": "Восстановлена предыдущая версия.", "disabled": "Обновления не настроены.",
+    "paused": "Установка отменена из-за паузы обновлений. После включения её можно запросить снова.",
 }
 FIELDS = {"id", "action", "requested_by", "created_at", "started_at", "finished_at", "updated_at",
           "current_revision", "available_revision", "last_checked_at", "last_operation_id", "phase"}
 REVISION = re.compile(r"^[a-fA-F0-9]{7,64}$")
+POLICY_GENERATION = re.compile(r"[a-f0-9]{32}")
 
 
 class EmptyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class UpdatePolicyRequest(EmptyRequest):
+    paused: StrictBool
 
 
 def _directory() -> Path:
@@ -55,6 +61,16 @@ def _read(path: Path) -> dict | None:
         return None
     except (OSError, ValueError):
         raise HTTPException(503, "состояние обновления временно недоступно") from None
+
+
+def _policy(directory: Path) -> tuple[bool, str | None]:
+    data = _read(directory / "policy.json")
+    if data is None:
+        return False, None
+    paused, generation = data.get("paused"), data.get("generation")
+    if not isinstance(paused, bool) or not isinstance(generation, str) or not POLICY_GENERATION.fullmatch(generation):
+        raise HTTPException(503, "настройка обновлений временно недоступна")
+    return paused, generation
 
 
 def _public(data: dict) -> dict:
@@ -80,17 +96,43 @@ def _public(data: dict) -> dict:
 def status():
     directory = control_dir()
     if directory is None:
-        return {"enabled": False, "phase": "disabled", "message": PHASE_MESSAGES["disabled"], "maintenance": False}
+        return {"enabled": False, "pause_supported": False, "paused": False,
+                "phase": "disabled", "message": PHASE_MESSAGES["disabled"], "maintenance": False}
     data = _read(directory / "status.json") or {"phase": "idle"}
-    return {**_public(data), "enabled": bool(data.get("enabled", True)), "maintenance": maintenance_active()}
+    paused, _ = _policy(directory)
+    return {**_public(data), "enabled": bool(data.get("enabled", True)),
+            "pause_supported": data.get("pause_supported") is True, "paused": paused,
+            "maintenance": maintenance_active()}
+
+
+@router.put("/policy", dependencies=[Depends(require(ADMIN))])
+def set_policy(data: UpdatePolicyRequest):
+    directory = _directory()
+    worker = _read(directory / "status.json") or {}
+    if worker.get("pause_supported") is not True:
+        raise HTTPException(503, "служба обновлений пока не поддерживает паузу")
+    paused, _ = _policy(directory)
+    if data.paused != paused:
+        try:
+            atomic_json(directory / "policy.json", {"paused": data.paused, "generation": uuid4().hex})
+        except OSError:
+            raise HTTPException(503, "не удалось сохранить настройку обновлений") from None
+    return {"paused": data.paused}
 
 
 def _queue(action: str, principal: Principal) -> dict:
     directory = _directory()
     request = {"id": str(uuid4()), "action": action, "requested_by": principal.name,
                "created_at": datetime.now(UTC).isoformat()}
+    if action == "apply":
+        paused, generation = _policy(directory)
+        if paused:
+            raise HTTPException(409, "установка обновлений приостановлена")
+    else:
+        generation = None
+    queued = {**request, "policy_generation": generation} if generation else request
     try:
-        atomic_json(directory / "requests" / f"{request['id']}.json", request)
+        atomic_json(directory / "requests" / f"{request['id']}.json", queued)
     except OSError:
         raise HTTPException(503, "не удалось сохранить запрос обновления") from None
     return {**request, "phase": "queued", "message": PHASE_MESSAGES["queued"]}

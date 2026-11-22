@@ -100,11 +100,18 @@ class UpdaterTests(unittest.TestCase):
         self.git("commit", "-m", contents)
         return self.git("rev-parse", "HEAD")
 
-    def request(self, action="apply", queued=False):
+    def request(self, action="apply", queued=False, generation=None):
         request = dict(id=str(uuid.uuid4()), action=action, requested_by="test", created_at=module.now())
+        if generation is not None:
+            request["policy_generation"] = generation
         if queued:
             module.atomic_json(self.config.state_dir / "requests" / (request["id"] + ".json"), request)
         return request
+
+    def set_pause(self, paused):
+        generation = uuid.uuid4().hex
+        module.atomic_json(self.config.state_dir / "policy.json", {"paused": paused, "generation": generation})
+        return generation
 
     def result(self, request):
         return module.read_json(self.config.state_dir / "operations" / (request["id"] + ".json"))
@@ -132,6 +139,64 @@ class UpdaterTests(unittest.TestCase):
         self.updater.execute(request)
         self.assertEqual(self.result(request)["phase"], "available")
         self.assertEqual(self.adapter.calls, ["current"])
+
+    def test_pause_survives_restart_and_keeps_manual_check(self):
+        second = self.commit("second")
+        self.set_pause(True)
+        with mock.patch.object(self.updater, "fetch", side_effect=AssertionError("no scheduled fetch")):
+            self.updater.run(once=True)
+            self.assertIsNone(self.updater.status["last_checked_at"])
+        self.assertEqual(self.adapter.calls, [])
+
+        check = self.request("check", queued=True)
+        self.updater.tick()
+        self.assertEqual(self.result(check)["phase"], "available")
+        self.assertEqual(self.adapter.calls, ["current"])
+        self.assertEqual(self.adapter.current, self.first)
+
+        self.updater = self.make_updater()
+        self.updater.run(once=True)
+        self.assertEqual(self.adapter.calls, ["current"])
+        self.set_pause(False)
+        self.updater.tick()
+        self.assertEqual(self.adapter.current, second)
+
+    def test_quick_resume_does_not_replay_old_queued_apply(self):
+        second = self.commit("second")
+        old = self.request(queued=True)
+        self.set_pause(True)
+        generation = self.set_pause(False)
+        self.updater.tick()
+        self.assertEqual(self.result(old)["phase"], "paused")
+        self.assertEqual(self.adapter.calls, [])
+
+        new = self.request(queued=True, generation=generation)
+        self.updater.tick()
+        self.assertEqual(self.result(new)["phase"], "succeeded")
+        self.assertNotIn("policy_generation", self.result(new))
+        self.assertEqual(self.adapter.current, second)
+
+    def test_pause_during_prepare_preserves_current_installation(self):
+        self.commit("second")
+        self.adapter.callback = lambda command: self.set_pause(True) if command == "prepare" else None
+        request = self.request()
+        self.updater.execute(request)
+        self.assertEqual(self.result(request)["phase"], "paused")
+        self.assertEqual(self.adapter.calls, ["current", "prepare"])
+        self.assertEqual(self.adapter.current, self.first)
+        self.assertFalse(self.adapter.maintenance)
+
+    def test_pause_during_activation_lets_update_finish(self):
+        second = self.commit("second")
+        self.adapter.callback = lambda command: self.set_pause(True) if command == "activate" else None
+        request = self.request()
+        self.updater.execute(request)
+        self.assertEqual(self.result(request)["phase"], "succeeded")
+        self.assertEqual(self.adapter.current, second)
+        self.assertFalse(self.adapter.maintenance)
+        self.commit("third")
+        self.updater.tick()
+        self.assertEqual(self.adapter.current, second)
 
     def test_offline_leaves_existing_portal_alone(self):
         self.config.repository = str(self.root / "absent")
@@ -343,7 +408,7 @@ class UpdaterTests(unittest.TestCase):
         request = self.request()
         self.updater.execute(request)
         self.assertLessEqual(set(self.result(request)), {"id", "action", "requested_by", "created_at", "started_at", "finished_at", "phase", "message", "current_revision", "available_revision", "failure_phase", "error_code"})
-        self.assertLessEqual(set(self.updater.status), {"enabled", "current_revision", "available_revision", "last_checked_at", "phase", "message", "last_operation_id", "updated_at", "failure_phase", "error_code"})
+        self.assertLessEqual(set(self.updater.status), {"enabled", "pause_supported", "current_revision", "available_revision", "last_checked_at", "phase", "message", "last_operation_id", "updated_at", "failure_phase", "error_code"})
 
     @unittest.skipUnless(os.name == "posix", "Unix filesystem permissions")
     def test_export_source_readable_by_unprivileged_agents_under_restrictive_umask(self):

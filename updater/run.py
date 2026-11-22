@@ -23,8 +23,10 @@ from urllib.parse import urlsplit
 
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
-TERMINAL = {"unchanged", "available", "succeeded", "failed", "recovery_required"}
+POLICY_GENERATION = re.compile(r"[a-f0-9]{32}")
+TERMINAL = {"unchanged", "available", "succeeded", "failed", "recovery_required", "paused"}
 DANGEROUS = {"activating", "verifying", "rolling_back", "resuming"}
+PAUSED_MESSAGE = "Installation canceled by the update pause"
 
 
 def now():
@@ -162,6 +164,7 @@ class Updater:
         self.internal = read_json(self.work / "worker.json", {}) or {}
         self.active = []
         self.effective_apply = False
+        self.apply_generation = None
         self.next_check = self.monotonic()
         self.startup_pending = True
         self.script_path = Path(__file__).resolve()
@@ -185,12 +188,27 @@ class Updater:
             if self.status.get("failure_phase"):
                 self.internal["failure_phase"] = self.status["failure_phase"]
             atomic_json(self.work / "worker.json", self.internal)
-        self.status.update(enabled=True, phase=phase, message=message, updated_at=now())
+        self.status.update(enabled=True, pause_supported=True, phase=phase, message=message, updated_at=now())
         self.status.setdefault("current_revision", "")
         self.status.setdefault("available_revision", "")
         self.status.setdefault("last_checked_at", None)
         self.status.setdefault("last_operation_id", None)
         atomic_json(self.state / "status.json", self.status)
+
+    def policy(self):
+        try:
+            with (self.state / "policy.json").open("rb") as stream:
+                raw = stream.read(32_769)
+            data = json.loads(raw) if len(raw) <= 32_768 else None
+        except FileNotFoundError:
+            return False, None
+        except (OSError, ValueError):
+            return True, None
+        if isinstance(data, dict):
+            paused, generation = data.get("paused"), data.get("generation")
+            if isinstance(paused, bool) and isinstance(generation, str) and POLICY_GENERATION.fullmatch(generation):
+                return paused, generation
+        return True, None
 
     def pending(self):
         requests = []
@@ -210,17 +228,30 @@ class Updater:
             created = value.get("created_at")
             if not isinstance(created, str) or len(created) > 64 or any(ord(c) < 32 for c in created):
                 created = now()
-            requests.append(dict(id=ident, action=value["action"], requested_by=who, created_at=created))
+            requests.append(dict(id=ident, action=value["action"], requested_by=who, created_at=created,
+                                 policy_generation=value.get("policy_generation")))
         return requests
 
     def attach(self, request):
-        self.active.append(dict(request, started_at=now()))
+        self.active.append({key: request[key] for key in ("id", "action", "requested_by", "created_at")}
+                           | {"started_at": now()})
+
+    def record_paused(self, request):
+        operation = {key: request[key] for key in ("id", "action", "requested_by", "created_at")}
+        timestamp = now()
+        operation.update(phase="paused", message=PAUSED_MESSAGE, started_at=timestamp, finished_at=timestamp,
+                         current_revision=self.status.get("current_revision", ""),
+                         available_revision=self.status.get("available_revision", ""))
+        atomic_json(self.state / "operations" / (operation["id"] + ".json"), operation)
 
     def phase(self, phase, message, finished=False):
         # Coalesce requests submitted during a long build/drain, preserving an
         # individually queryable operation record for every accepted request.
+        can_join_apply = self.effective_apply and self.policy() == (False, self.apply_generation)
+        active_ids = {operation["id"] for operation in self.active}
         for request in self.pending():
-            if request["id"] not in {x["id"] for x in self.active} and (request["action"] == "check" or self.effective_apply):
+            same_policy = can_join_apply and request["policy_generation"] == self.apply_generation
+            if request["id"] not in active_ids and (request["action"] == "check" or same_policy):
                 self.attach(request)
         self.save_status(phase, message)
         for operation in self.active:
@@ -259,6 +290,8 @@ class Updater:
             atomic_json(path, operation)
         if unsafe or interrupted or previous_phase not in TERMINAL:
             self.save_status(phase if unsafe or interrupted else "idle", message if unsafe or interrupted else "Updater ready")
+        elif self.status.get("pause_supported") is not True:
+            self.save_status(previous_phase, self.status.get("message", "Updater ready"))
 
     def git(self, *args, capture=False, output=None):
         # No checkout, hooks, submodules, credentials in argv, or host git config.
@@ -314,8 +347,15 @@ class Updater:
         self.adapter("resume")
 
     def execute(self, request, automatic=False):
+        paused, generation = self.policy()
+        if automatic and paused:
+            return
+        if request["action"] == "apply" and (paused or request.get("policy_generation") != generation):
+            self.record_paused(request)
+            return
         self.active = []
         self.effective_apply = request["action"] == "apply" or (automatic and self.config.auto_apply)
+        self.apply_generation = generation
         self.attach(request)
         self.status["last_operation_id"] = request["id"]
         blocked = self.internal.get("recovery_required") is True or self.status.get("phase") == "recovery_required"
@@ -346,6 +386,9 @@ class Updater:
             if not self.effective_apply:
                 self.phase("available", "An update is available", finished=True)
                 return
+            if self.policy() != (False, self.apply_generation):
+                self.phase("paused", PAUSED_MESSAGE, finished=True)
+                return
             if automatic and self.internal.get("failed_revision") == candidate:
                 self.phase("failed", "This revision previously failed; an explicit apply is required to retry", finished=True)
                 return
@@ -355,6 +398,9 @@ class Updater:
             if read_json(prepared, {}).get("revision") != candidate:
                 self.adapter("prepare", source, candidate, timeout=self.config.prepare_timeout_seconds)
                 atomic_json(prepared, {"revision": candidate})
+            if self.policy() != (False, self.apply_generation):
+                self.phase("paused", PAUSED_MESSAGE, finished=True)
+                return
             self.phase("draining", "Waiting for active runs to finish")
             disruptive = True
             result = self.adapter("drain", json_output=True)
@@ -427,6 +473,9 @@ class Updater:
             # Prefer apply, so simultaneous checks share its preparation/result.
             request = next((x for x in pending if x["action"] == "apply"), pending[0])
             self.execute(request)
+            return
+        if self.policy()[0]:
+            self.next_check = self.monotonic()
             return
         if self.monotonic() >= self.next_check:
             if self.startup_pending:
