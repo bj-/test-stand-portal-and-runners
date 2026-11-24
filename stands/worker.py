@@ -521,7 +521,7 @@ class Worker:
                            workspace_required=spec['workspace_required'], timeout=self.config['timeout'], cancel=self.checkpoint)
             self.check()
             if self.config.get('managed_run_overlays') is not None and workspace.exists():
-                _, snapshot, _ = runtime.load(workspace)
+                _, snapshot, _ = runtime.load_snapshot(workspace)
                 data_modules.cleanup(self.config['managed_run_overlays'], snapshot, project=spec['project'], stand_id=stand_id,
                                      target_host=self.config['host_id'], workspace=workspace)
             self.check()

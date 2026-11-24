@@ -198,6 +198,30 @@ class WorkerTests(unittest.TestCase):
                 delete.assert_not_called()
                 self.assertEqual(self.api.calls[-1][2]['status'], 'failed')
 
+    def test_delete_overlay_cleanup_retries_after_contexts_are_removed(self):
+        with mock.patch.object(runtime, 'run', side_effect=self.fake_runtime):
+            self.assertEqual(self.worker.job(self.job), 0)
+        self.config['managed_run_overlays'] = self.base / 'managed-overlays'
+        snapshots = []
+
+        def cleanup(overlays, snapshot, **kwargs):
+            self.assertFalse((self.workspace / 'contexts').exists())
+            self.assertTrue((self.workspace / 'results/attempt/allure-report.html').is_file())
+            snapshots.append(snapshot)
+            if len(snapshots) == 1:
+                raise OSError('overlay cleanup failed')
+
+        with mock.patch.object(worker.data_modules, 'cleanup', side_effect=cleanup) as clean, \
+                mock.patch.object(runtime.Executor, 'call', side_effect=AssertionError('unexpected Docker')):
+            job = {'id': 9, 'kind': 'stand-delete', 'spec': self.delete_spec()}
+            self.assertEqual(self.worker.job(job), 2)
+            self.assertEqual(self.api.calls[-1][2]['status'], 'failed')
+            self.assertEqual(self.worker.job(job), 0)
+            self.assertEqual(self.api.calls[-1][2]['status'], 'done')
+        self.assertEqual(clean.call_count, 2)
+        self.assertEqual(snapshots[0], snapshots[1])
+        self.assertEqual(snapshots[0], stand.read_json(self.workspace / 'snapshot.json'))
+
     def test_delete_failure_or_cancellation_never_reports_done(self):
         for error in (stand.StandError('unsafe data'), runtime.Cancelled('cancelled')):
             with self.subTest(error=error), mock.patch.object(runtime, 'delete', side_effect=error):

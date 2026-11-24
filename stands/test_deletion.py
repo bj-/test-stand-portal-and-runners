@@ -34,6 +34,8 @@ class DeletionTests(unittest.TestCase):
         self.down_fail = False
         self.foreign_user = False
         self.networks = {}
+        self.images = {}
+        self.image_failure = None
 
     def call(self, argv, log, *, capture=False):
         self.resource_calls.append(argv)
@@ -52,6 +54,16 @@ class DeletionTests(unittest.TestCase):
             return '\n'.join(self.networks)
         if argv[:3] == ['docker', 'network', 'inspect']:
             return json.dumps([self.networks[argv[-1]]])
+        if argv[:3] == ['docker', 'image', 'ls']:
+            return '\n'.join(self.images)
+        if argv[:3] == ['docker', 'image', 'inspect']:
+            return json.dumps([self.images[argv[-1]]])
+        if argv[:3] == ['docker', 'image', 'rm']:
+            self.assertEqual(argv[3], '--no-prune')
+            if argv[-1] == self.image_failure:
+                raise stand.StandError('image removal failed')
+            del self.images[argv[-1]]
+            return ''
         if 'down' in argv:
             if self.down_fail:
                 raise stand.StandError('partial down failed')
@@ -100,7 +112,118 @@ class DeletionTests(unittest.TestCase):
         self.assertEqual(self.delete()['status'], 'deleted')
         self.assertEqual(self.resource_calls, [])
         self.assertTrue((self.root / 'snapshot.json').is_file())
-        self.assertTrue((self.root / 'contexts/api/compose.yaml').is_file())
+        for name in ('contexts', '.runtime.env', 'runtime.override.json', 'runtime.effective.json'):
+            self.assertFalse((self.root / name).exists())
+        for name in ('execution.json', '.worker-identity.json', stand.MARKER, 'logs'):
+            self.assertTrue((self.root / name).exists())
+        self.assertEqual(self.state()['cleanup_phase'], 'complete')
+
+    def add_image(self, service, **labels):
+        tag = f'{self.project}-{service}:latest'
+        self.images[tag] = {'Id': 'sha256:' + 'd' * 64, 'RepoTags': [tag], 'Config': {'Labels': {
+            'com.docker.compose.project': self.project, 'com.docker.compose.service': service, **labels}}}
+        return tag
+
+    def test_removes_owned_default_tag_and_preserves_shared_alias_and_foreign_images(self):
+        self.prepare()
+        owned = self.add_image('api')
+        alias = 'shared-api:stable'
+        self.images[owned]['RepoTags'].append(alias)
+        self.images[alias] = self.images[owned]
+        foreign = self.add_image('runner', **{'com.docker.compose.project': 'foreign'})
+        unrelated = self.add_image('unrelated')
+        self.delete()
+        self.assertEqual(set(self.images), {alias, foreign, unrelated})
+        removals = [argv for argv in self.resource_calls if argv[:3] == ['docker', 'image', 'rm']]
+        self.assertEqual(removals, [['docker', 'image', 'rm', '--no-prune', owned]])
+        self.assertLess(next(i for i, argv in enumerate(self.resource_calls) if 'down' in argv),
+                        self.resource_calls.index(removals[0]))
+
+    def test_custom_image_and_wrong_service_label_are_preserved(self):
+        self.prepare()
+        self.add_image('api', **{'com.docker.compose.service': 'other-service'})
+        self.add_image('runner')
+        self.alter_config(lambda config: config['services']['runner'].update(image='custom-runner:latest'))
+        before = set(self.images)
+        self.delete()
+        self.assertEqual(set(self.images), before)
+        self.assertFalse(any(argv[:3] == ['docker', 'image', 'rm'] for argv in self.resource_calls))
+
+    def test_partial_image_removal_keeps_inputs_and_bind_data_until_retry(self):
+        self.prepare()
+        owned = self.add_image('api')
+        self.image_failure = self.add_image('runner')
+        data = self.root / 'data.sqlite'
+        data.write_text('stand data')
+        self.alter_config(lambda config: config['services']['api']['volumes'].append(
+            {'type': 'bind', 'source': str(data), 'target': '/data2'}))
+        with self.assertRaisesRegex(stand.StandError, 'image removal failed'):
+            self.delete()
+        self.assertNotIn(owned, self.images)
+        self.assertTrue(data.exists())
+        self.assertTrue((self.root / 'contexts').exists())
+        self.assertNotIn('cleanup_phase', self.state())
+        self.assertEqual(self.state()['deletions'][-1]['status'], 'failed')
+        self.image_failure = None
+        self.resource_calls.clear()
+        self.assertEqual(self.delete()['cleanup_phase'], 'complete')
+        self.assertFalse(self.images)
+        self.assertFalse(data.exists())
+        self.assertFalse(any(argv == ['docker', 'image', 'inspect', owned] for argv in self.resource_calls))
+
+    def test_legacy_deleted_execution_still_cleans_images_and_inputs(self):
+        self.prepare()
+        tag = self.add_image('api')
+        state = self.state()
+        state['status'] = 'deleted'
+        runtime.atomic_json(self.root / 'execution.json', state)
+        self.containers = []
+        self.volumes = {}
+        self.assertEqual(self.delete()['cleanup_phase'], 'complete')
+        self.assertNotIn(tag, self.images)
+        self.assertFalse((self.root / 'contexts').exists())
+
+    def test_partial_context_cleanup_retries_without_context_validation_or_docker(self):
+        self.prepare()
+        rmtree = runtime.shutil.rmtree
+
+        def partial(path):
+            self.assertEqual(path, self.root / 'contexts')
+            rmtree(path / 'api')
+            raise OSError('partial context cleanup')
+
+        with mock.patch.object(runtime.shutil, 'rmtree', side_effect=partial):
+            with self.assertRaisesRegex(OSError, 'partial context cleanup'):
+                self.delete()
+        self.assertEqual(self.state()['cleanup_phase'], 'files')
+        failed = self.state()['deletions'][-1]
+        self.assertEqual(failed['status'], 'failed')
+        self.assertEqual(failed['error'], 'partial context cleanup')
+        self.assertFalse((self.root / 'contexts/api').exists())
+        self.resource_calls.clear()
+        self.assertEqual(self.delete()['cleanup_phase'], 'complete')
+        self.assertEqual(self.resource_calls, [])
+        self.assertFalse((self.root / 'contexts').exists())
+        self.assertEqual(self.state()['deletions'][-2], failed)
+        self.assertEqual(self.state()['deletions'][-1]['status'], 'success')
+        self.assertEqual(self.state()['deletions'][-1]['phase'], 'files')
+        self.assertNotIn('error', self.state()['deletions'][-1])
+
+    def test_runtime_configuration_directory_is_never_deleted_recursively(self):
+        self.prepare()
+        state = self.state()
+        state['cleanup_phase'] = 'files'
+        runtime.atomic_json(self.root / 'execution.json', state)
+        path = self.root / 'runtime.override.json'
+        path.unlink()
+        path.mkdir()
+        report = path / 'keep.html'
+        report.write_text('keep report')
+        with self.assertRaisesRegex(stand.StandError, 'must be a file'):
+            self.delete()
+        self.assertEqual(report.read_text(), 'keep report')
+        self.assertTrue((self.root / 'contexts').exists())
+        self.assertEqual(self.resource_calls, [])
 
     def test_missing_workspace_and_prepared_workspace_need_no_daemon(self):
         missing = self.root / 'never-built'
@@ -111,6 +234,9 @@ class DeletionTests(unittest.TestCase):
             'stand': 'one', 'project': 'DEMO', 'profile': self.snapshot['profile'],
             'template_sha256': self.snapshot['template_sha256']})
         calls = len(self.commands)
+        self.assertEqual(runtime.delete(self.root, stand_id='one', project='DEMO', target_host='local')['status'], 'deleted')
+        self.assertEqual(len(self.commands), calls)
+        self.assertFalse((self.root / 'contexts').exists())
         self.assertEqual(runtime.delete(self.root, stand_id='one', project='DEMO', target_host='local')['status'], 'deleted')
         self.assertEqual(len(self.commands), calls)
 

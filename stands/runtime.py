@@ -52,7 +52,7 @@ def safe_path(workspace, path, *, exists=True):
     return resolved
 
 
-def load(workspace):
+def load_snapshot(workspace):
     raw = Path(workspace).absolute()
     for part in (raw, *raw.parents):
         if stand.is_link(part):
@@ -76,6 +76,15 @@ def load(workspace):
     template = stand.validate_snapshot(snapshot, repositories)
     if snapshot["secret_refs"]:
         stand.fail("runtime: secret_refs are not supported; no secrets are resolved")
+    return root, snapshot, template
+
+
+def load(workspace):
+    root, snapshot, template = load_snapshot(workspace)
+    return root, snapshot, load_contexts(root, template)
+
+
+def load_contexts(root, template):
     for component in template["components"]:
         context = safe_path(root, root / "contexts" / component["id"])
         if not context.is_dir():
@@ -88,7 +97,7 @@ def load(workspace):
     compose_path = safe_path(root, root / "contexts" / compose["component"] / compose["path"])
     if not compose_path.is_file():
         stand.fail("runtime: compose file missing")
-    return root, snapshot, compose_path
+    return compose_path
 
 
 def atomic_json(path, value):
@@ -880,12 +889,68 @@ def deletion_bind_paths(root, config, compose_path):
     return sorted(paths, key=lambda path: len(path.parts))
 
 
-def delete(workspace, *, stand_id, project, target_host, workspace_required=True, timeout=900, cancel=None):
-    """Delete only a worker-owned stand's Compose resources and writable bind data.
+def delete_build_images(executor, config, project, log):
+    candidates = {f"{project}-{service}:latest": service for service, value in config["services"].items()
+                  if value.get("build") and not value.get("image")}
+    if not candidates:
+        return
+    # Listing distinguishes absence after a partial deletion from daemon errors.
+    tags = executor.call(["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}"], log, capture=True).splitlines()
+    for tag in sorted(candidates.keys() & set(tags)):
+        values = json_output(executor.call(["docker", "image", "inspect", tag], log, capture=True), "image inspect")
+        if not isinstance(values, list) or len(values) != 1 or tag not in (values[0].get("RepoTags") or []):
+            stand.fail("runtime: invalid build image ownership inspection")
+        labels = (values[0].get("Config") or {}).get("Labels") or {}
+        if (labels.get("com.docker.compose.project") == project
+                and labels.get("com.docker.compose.service") == candidates[tag]):
+            # Remove the owned tag only; shared aliases and parent layers remain.
+            executor.call(["docker", "image", "rm", "--no-prune", tag], log)
 
-    Keep snapshots, exported sources, logs and reports for audit/recovery. No image,
-    global Docker prune, external volume or unrelated workspace is removed.
-    """
+
+def finish_deletion(root, state, cancel):
+    # Persist before deleting any context: retries no longer need Compose inputs
+    # or Docker once all runtime resources and writable binds are gone.
+    records = state.setdefault("deletions", [])
+    if records and records[-1].get("status") == "running":
+        record = records[-1]
+    else:
+        record = {"started_at": now(), "status": "running", "phase": "files"}
+        records.append(record)
+    state["cleanup_phase"] = "files"
+    atomic_json(root / "execution.json", state)
+    try:
+        files = [safe_path(root, root / name, exists=False)
+                 for name in (".runtime.env", "runtime.override.json", "runtime.effective.json")]
+        if any(path.is_dir() for path in files):
+            stand.fail("runtime: temporary runtime configuration must be a file")
+        context = safe_path(root, root / "contexts", exists=False)
+        if context.exists() and not context.is_dir():
+            stand.fail("runtime: contexts must be a directory")
+        if cancel and cancel():
+            raise Cancelled("runtime: deletion file cleanup cancelled")
+        if context.is_dir():
+            for parent, dirs, children in os.walk(context, followlinks=False):
+                for child in dirs + children:
+                    safe_path(root, Path(parent) / child)
+            shutil.rmtree(context)
+        for path in files:
+            if cancel and cancel():
+                raise Cancelled("runtime: deletion file cleanup cancelled")
+            safe_path(root, path, exists=False)
+            if path.exists():
+                path.unlink()
+        record.update(status="success", finished_at=now())
+        state.update(status="deleted", deleted_at=now(), cleanup_phase="complete")
+        atomic_json(root / "execution.json", state)
+        return state
+    except (Exception, KeyboardInterrupt) as exc:
+        record.update(status="failed", finished_at=now(), error=str(exc))
+        atomic_json(root / "execution.json", state)
+        raise
+
+
+def delete(workspace, *, stand_id, project, target_host, workspace_required=True, timeout=900, cancel=None):
+    """Delete owned runtime resources and temporary inputs, keeping audit history."""
     stand.identifier(stand_id, "stand id")
     stand.identifier(target_host, "target host")
     if type(workspace_required) is not bool:
@@ -902,26 +967,30 @@ def delete(workspace, *, stand_id, project, target_host, workspace_required=True
         if (not isinstance(identity, dict) or identity.get("stand") != stand_id or identity.get("project") != project
                 or identity.get("target_host", target_host) != target_host):
             stand.fail("runtime: stand deletion workspace ownership mismatch")
-        root, snapshot, compose_path = load(root)
+        root, snapshot, template = load_snapshot(root)
         if (identity.get("template_sha256") != snapshot["template_sha256"] or identity.get("profile") != snapshot["profile"]):
             stand.fail("runtime: stand deletion snapshot identity mismatch")
         state = existing_state(root, snapshot)
         if state is None:
             # Preparation alone never starts Docker or creates stand data.
-            return {"status": "deleted"}
+            state = {"schema_version": 1, "project_name": "stand-" + uuid.uuid4().hex, "workspace": str(root),
+                     "snapshot_sha256": hashlib.sha256(stand.canonical(snapshot)).hexdigest(),
+                     "reserved_ports": identity.get("ports"), "attempts": []}
+            return finish_deletion(root, state, cancel)
         if state.get("reserved_ports") != identity.get("ports"):
             stand.fail("runtime: stand deletion execution identity mismatch")
-        if state.get("status") == "deleted":
+        if state.get("cleanup_phase") == "complete":
             return state
+        if state.get("cleanup_phase") == "files":
+            return finish_deletion(root, state, cancel)
+        compose_path = load_contexts(root, template)
         # Portal executions always persist this canonical configuration before
         # their first lifecycle command. No config => preflight never deployed.
         effective_path = safe_path(root, root / "runtime.effective.json", exists=False)
         if not state.get("effective_sha256"):
             if any(attempt.get("stages") for attempt in state["attempts"]):
                 stand.fail("runtime: execution has no frozen effective configuration")
-            state.update(status="deleted", deleted_at=now())
-            atomic_json(root / "execution.json", state)
-            return state
+            return finish_deletion(root, state, cancel)
         effective = stand.read_json(effective_path)
         if hashlib.sha256(stand.canonical(effective)).hexdigest() != state["effective_sha256"]:
             stand.fail("runtime: changed effective config identity")
@@ -944,6 +1013,7 @@ def delete(workspace, *, stand_id, project, target_host, workspace_required=True
             compose = prefix(root, effective_path, state["project_name"])
             deletion_resources(executor, effective, compose, state["project_name"], log)
             executor.call([*compose, "down", "--volumes", "--remove-orphans"], log)
+            delete_build_images(executor, effective, state["project_name"], log)
             for path in paths:
                 executor.checkpoint()
                 safe_path(root, path, exists=False)
@@ -951,10 +1021,7 @@ def delete(workspace, *, stand_id, project, target_host, workspace_required=True
                     shutil.rmtree(path)
                 elif path.exists():
                     path.unlink()
-            record.update(status="success", finished_at=now())
-            state.update(status="deleted", deleted_at=now())
-            atomic_json(root / "execution.json", state)
-            return state
+            return finish_deletion(root, state, cancel)
         except (Exception, KeyboardInterrupt) as exc:
             record.update(status="failed", finished_at=now(), error=str(exc))
             atomic_json(root / "execution.json", state)
