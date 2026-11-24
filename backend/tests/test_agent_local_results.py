@@ -82,7 +82,7 @@ def test_configuration_defaults_remain_remote(agent, monkeypatch):
 
 @pytest.mark.parametrize("failure", [RuntimeError("offline"), subprocess.TimeoutExpired("git", 0.5)])
 def test_source_fetch_failure_uses_cache_and_reports_commit(agent, job, monkeypatch, failure):
-    tests, _, _ = agent.prepare(Mock(), job)
+    tests, _ = agent.prepare(Mock(), job)
     original = agent.git
     def offline(log, *args, **kwargs):
         if args[0] == "fetch":
@@ -128,7 +128,7 @@ def test_two_local_runs_survive_prepare_and_never_touch_results_remote(agent, jo
     remote_before = git(repos["results"], "rev-parse", "main")
     kept = []
     for number in (1, 2):
-        _, results, _ = agent.prepare(Mock(), job)
+        _, results = agent.prepare(Mock(), job)
         run_id, run = run_file(results, number)
         kept.append(run)
         assert agent.publish_results(Mock(), number, results, "fixture") == run_id
@@ -144,7 +144,7 @@ def test_two_local_runs_survive_prepare_and_never_touch_results_remote(agent, jo
 
 
 def test_local_results_preserve_uncommitted_runs_but_reject_unrelated_changes(agent, job):
-    _, results, _ = agent.prepare(Mock(), job)
+    _, results = agent.prepare(Mock(), job)
     _, run = run_file(results, 1)
     agent.prepare(Mock(), job)
     assert (run / "run.yaml").exists()
@@ -158,7 +158,7 @@ def test_local_results_preserve_uncommitted_runs_but_reject_unrelated_changes(ag
 
 
 def test_default_mode_fetch_failure_does_not_fall_back(agent, job, monkeypatch):
-    tests, _, _ = agent.prepare(Mock(), job)
+    tests, _ = agent.prepare(Mock(), job)
     monkeypatch.setattr(agent, "GIT_MODE", "remote")
     monkeypatch.setattr(agent, "git", Mock(side_effect=RuntimeError("offline")))
     with pytest.raises(RuntimeError, match="offline"):
@@ -167,7 +167,7 @@ def test_default_mode_fetch_failure_does_not_fall_back(agent, job, monkeypatch):
 
 
 def test_available_source_is_updated_without_changing_origin(agent, job, repos, tmp_path):
-    tests, _, _ = agent.prepare(Mock(), job)
+    tests, _ = agent.prepare(Mock(), job)
     source = tmp_path / "tests"
     (source / "new.txt").write_text("updated", encoding="utf-8")
     git(source, "add", "new.txt")
@@ -180,7 +180,7 @@ def test_available_source_is_updated_without_changing_origin(agent, job, repos, 
 
 def test_default_mode_resets_results_and_pushes(agent, job, repos, monkeypatch):
     monkeypatch.setattr(agent, "GIT_MODE", "remote")
-    _, results, _ = agent.prepare(Mock(), job)
+    _, results = agent.prepare(Mock(), job)
     stale = results / "stale.txt"
     stale.write_text("stale", encoding="utf-8")
     agent.prepare(Mock(), job)
@@ -198,7 +198,7 @@ def test_overlay_is_ignored_reapplied_and_does_not_change_source(agent, job, rep
     (local / "ignored.txt").write_text("not copied", encoding="utf-8")
     monkeypatch.setattr(agent, "TESTS_OVERLAY_DIR", str(overlay))
     for _ in range(2):
-        tests, _, _ = agent.prepare(Mock(), job)
+        tests, _ = agent.prepare(Mock(), job)
         assert (tests / ".local" / "Fixture.yaml").read_text(encoding="utf-8").startswith("baseUrl:")
         assert not (tests / ".local" / "ignored.txt").exists()
         assert git(tests, "status", "--porcelain") == ""
@@ -218,7 +218,7 @@ def test_overlay_rejects_path_traversal(agent, tmp_path, project, monkeypatch):
 
 @pytest.mark.parametrize("link_part", ["project", "local", "file", "destination"])
 def test_overlay_rejects_symlinks(agent, job, tmp_path, monkeypatch, link_part):
-    tests, _, _ = agent.prepare(Mock(), job)
+    tests, _ = agent.prepare(Mock(), job)
     overlay = tmp_path / "overlay"
     local = overlay / "FIXTURE" / ".local"
     local.mkdir(parents=True)
@@ -247,7 +247,7 @@ def test_overlay_rejects_symlinks(agent, job, tmp_path, monkeypatch, link_part):
 
 
 def test_overlay_cannot_overwrite_tracked_yaml(agent, job, tmp_path, monkeypatch):
-    tests, _, _ = agent.prepare(Mock(), job)
+    tests, _ = agent.prepare(Mock(), job)
     local = tests / ".local"
     local.mkdir()
     (local / "Fixture.yaml").write_text("tracked", encoding="utf-8")
@@ -265,7 +265,7 @@ def test_overlay_cannot_overwrite_tracked_yaml(agent, job, tmp_path, monkeypatch
 @pytest.mark.parametrize("link_part", ["project", "local", "destination"])
 def test_overlay_rejects_windows_junctions(agent, job, tmp_path, monkeypatch, link_part):
     import _winapi
-    tests, _, _ = agent.prepare(Mock(), job)
+    tests, _ = agent.prepare(Mock(), job)
     overlay = tmp_path / "overlay"
     project = overlay / "FIXTURE"
     local = project / ".local"
@@ -288,7 +288,7 @@ def test_overlay_rejects_windows_junctions(agent, job, tmp_path, monkeypatch, li
 
 def test_execute_local_result_still_uploads_and_runs_after_job(agent, job, monkeypatch):
     agent.AFTER_JOB = "fixture sync"
-    def run(log, job_id, spec, tests, results, library):
+    def run(log, job_id, spec, tests, results):
         run_file(results, 1)
         return 0
     monkeypatch.setattr(agent, "run_tests", run)

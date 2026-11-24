@@ -123,7 +123,7 @@ def test_managed_rejects_invalid_url(agent_module, monkeypatch, url):
 @pytest.mark.parametrize("selected", [None, ["P01"]])
 def test_managed_docker_argv_retains_bridge_shape_without_overlay(agent_module, monkeypatch, tmp_path, selected):
     monkeypatch.setattr(agent_module, "MANAGED_STAND_HOST", "local-host")
-    monkeypatch.setattr(agent_module, "library_configuration", lambda: ({}, []))
+    monkeypatch.setattr(agent_module, "library_configuration", lambda: ({"AUTOTEST_LIBRARY_API_URL": "https://library.invalid"}, []))
     monkeypatch.setattr(agent_module, "runtime_environment", lambda *args: {})
     monkeypatch.setattr(os, "getuid", lambda: 1000, raising=False)
     monkeypatch.setattr(os, "getgid", lambda: 1000, raising=False)
@@ -133,7 +133,7 @@ def test_managed_docker_argv_retains_bridge_shape_without_overlay(agent_module, 
     spec["test_ids"] = selected
     (tmp_path / ".local").mkdir()
     (tmp_path / ".local" / "stand-1-api.yaml").write_text("secretKey: private-value\n", encoding="utf-8")
-    assert agent_module.run_tests(SimpleNamespace(write=log_messages.append), 9, spec, tmp_path, tmp_path, tmp_path) == 0
+    assert agent_module.run_tests(SimpleNamespace(write=log_messages.append), 9, spec, tmp_path, tmp_path) == 0
     command = calls[0]
     argv = command[command.index(agent_module.IMAGE) + 1:]
     assert argv[:3] == ["python3", "-c", agent_module.NEWMAN_SELECTION]

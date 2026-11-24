@@ -8,7 +8,6 @@
   AGENT_ENGINE                  каталог движка test-engine
   AUTOTEST_LIBRARY_API_URL       HTTPS API библиотеки
   AUTOTEST_LIBRARY_API_KEY_FILE  закрытый файл ключа (либо AUTOTEST_LIBRARY_API_KEY в окружении)
-  AGENT_LIBRARY_URL             репозиторий библиотеки только для прежнего локального режима
   RUNNER_IMAGE                  образ исполнителя
   GITLAB_TOKEN                  токен git; в аргументы процессов не попадает
   GITHUB_TOKEN                  токен чтения GitHub; отдельно от GITLAB_TOKEN
@@ -50,7 +49,6 @@ if MANAGED_STAND_HOST and "managed-newman-v1" not in CAPABILITIES:
     CAPABILITIES.append("managed-newman-v1")
 WORK = Path(os.environ.get("AGENT_WORK", "/srv/data/portal/agent"))
 ENGINE = os.environ.get("AGENT_ENGINE", "/opt/test-engine")
-LIBRARY_URL = os.environ.get("AGENT_LIBRARY_URL", "")
 LIBRARY_API_NAMES = ("AUTOTEST_LIBRARY_API_URL", "AUTOTEST_LIBRARY_API_KEY_FILE", "AUTOTEST_LIBRARY_API_KEY")
 IMAGE = os.environ.get("RUNNER_IMAGE", "test-portal-runner")
 AFTER_JOB = os.environ.get("AFTER_JOB")
@@ -192,12 +190,10 @@ def apply_tests_overlay(log: Log, project: str, tests: Path, managed_environment
 
 
 def library_configuration():
-    """API имеет приоритет; ошибочная настройка не разрешает клон библиотеки."""
-    if not any(key in os.environ for key in LIBRARY_API_NAMES):
-        if not LIBRARY_URL:
-            raise RuntimeError("не настроен Library API")
-        return {}, []
+    """Обязательная конфигурация HTTPS API для Newman."""
     url = os.environ.get("AUTOTEST_LIBRARY_API_URL", "")
+    if not url:
+        raise RuntimeError("для Newman требуется AUTOTEST_LIBRARY_API_URL и клиентский ключ Library API")
     try:
         parsed = urllib.parse.urlsplit(url)
     except ValueError:
@@ -220,12 +216,14 @@ def library_configuration():
     return env, []
 
 
-def prepare(log: Log, spec: dict) -> tuple[Path, Path, Path]:
+def prepare(log: Log, spec: dict) -> tuple[Path, Path]:
     if (GIT_MODE == "local-results" or TESTS_OVERLAY_DIR) and (
             not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", spec["project"]) or ".." in spec["project"]):
         raise ValueError("недопустимый проект для локальной рабочей копии")
+    if spec.get("runner", "newman") == "newman":
+        library_configuration()
     base = WORK / spec["project"]
-    tests, results, library = base / "tests", base / "results", WORK / "Test-Library"
+    tests, results = base / "tests", base / "results"
     log.write(f"== подготовка: тесты {spec['ref']}\n")
     clone_or_update(log, spec["tests_url"], tests)
     git(log, "checkout", "-q", "-f", "--detach", f"origin/{spec['ref']}", cwd=tests)
@@ -245,12 +243,7 @@ def prepare(log: Log, spec: dict) -> tuple[Path, Path, Path]:
         git(log, "checkout", "-q", "-f", "main", cwd=results)
         git(log, "reset", "-q", "--hard", "origin/main", cwd=results)
         git(log, "clean", "-qfdx", cwd=results)
-    if spec.get("runner", "newman") == "newman":
-        api_env, _ = library_configuration()
-        if not api_env:  # явная настройка прежней установки
-            clone_or_update(log, LIBRARY_URL, library)
-            git(log, "reset", "-q", "--hard", "origin/HEAD", cwd=library)
-    return tests, results, library
+    return tests, results
 
 
 NEWMAN_SELECTION = r'''
@@ -402,7 +395,7 @@ def managed_newman_variables(spec: dict) -> dict:
     return values
 
 
-def run_tests(log: Log, job_id: int, spec: dict, tests: Path, results: Path, library: Path) -> int:
+def run_tests(log: Log, job_id: int, spec: dict, tests: Path, results: Path) -> int:
     validate_selection(spec)
     managed = "stand_target" in spec
     variables = managed_newman_variables(spec) if managed else None
@@ -426,8 +419,6 @@ def run_tests(log: Log, job_id: int, spec: dict, tests: Path, results: Path, lib
     ]
     runtime = runtime_environment(job_id, spec)
     runtime.update(library_env)
-    if not library_env:
-        library_mounts = ["-e", "AUTOTEST_LIBRARY=/library", "-v", f"{library}:/library:ro"]
     # Значения, особенно bearer, передаются через окружение docker CLI, не argv и не лог.
     image_index = command.index(IMAGE)
     command[image_index:image_index] = [part for key in runtime for part in ("-e", key)]
@@ -904,11 +895,11 @@ def execute(job: dict) -> None:
         pump = threading.Thread(target=pump_data_children, args=(job_id, stop), daemon=True)
         pump.start()
     try:
-        tests, results, library = prepare(log, spec)
+        tests, results = prepare(log, spec)
         if spec.get("runner", "newman") == "pytest":
             code, _ = run_pytest(log, job_id, spec, tests, results)
         else:
-            code = run_tests(log, job_id, spec, tests, results, library)
+            code = run_tests(log, job_id, spec, tests, results)
         if log.cancel:
             status, message = "cancelled", "отменено"
         else:
