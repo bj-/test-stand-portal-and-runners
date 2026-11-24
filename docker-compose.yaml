@@ -21,6 +21,7 @@ services:
         BASE_REGISTRY: ${BASE_REGISTRY:-docker.io/library}
     restart: unless-stopped
     environment:
+      TZ: ${TZ:-Etc/UTC}
       PORTAL_DATABASE_URL: postgresql+psycopg://portal:${POSTGRES_PASSWORD}@postgres:5432/portal
       PORTAL_PROJECTS: /config/projects.yaml
       PORTAL_COOKIE_SECURE: ${PORTAL_COOKIE_SECURE:-false}

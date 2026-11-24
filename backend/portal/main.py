@@ -33,7 +33,7 @@ async def lifespan(_app: FastAPI):
         await expiration
 
 
-app = FastAPI(title="Test Portal", version="0.2.1", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+app = FastAPI(title="Test Portal", version="0.2.2", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
 
 @app.exception_handler(RegistryError)

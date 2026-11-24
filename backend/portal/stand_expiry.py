@@ -1,7 +1,7 @@
 """Queue the ordinary host cleanup for expired managed stands."""
 import asyncio
 import logging
-from datetime import datetime
+from datetime import UTC, datetime, time, timedelta
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
@@ -14,7 +14,6 @@ from .models import Job, StandInstance
 from .registry import load_registry
 from .update_control import maintenance_active
 
-CHECK_INTERVAL_SECONDS = 60
 AUTOMATIC_ACTOR = "system:stand-expiry"
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,8 @@ def queue_expired(session: Session, moment: datetime) -> int:
     if maintenance_active():
         session.rollback()
         return 0
-    today_utc = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+    local_date = moment.replace(tzinfo=UTC).astimezone().date()
+    local_midnight_utc = datetime.combine(local_date, time.min).astimezone(UTC).replace(tzinfo=None)
     deletion_exists = select(Job.id).where(
         Job.project == StandInstance.project, Job.target == StandInstance.id, Job.kind == "stand-delete",
         or_(Job.status.in_(("queued", "running")), Job.created_by == AUTOMATIC_ACTOR),
@@ -34,7 +34,7 @@ def queue_expired(session: Session, moment: datetime) -> int:
     due = session.scalars(select(StandInstance).where(
         StandInstance.mode == "ephemeral", StandInstance.deleted_at.is_(None), ~deletion_exists,
         or_(StandInstance.delete_after <= moment,
-            and_(StandInstance.delete_after.is_(None), StandInstance.expires < today_utc)),
+            and_(StandInstance.delete_after.is_(None), StandInstance.expires < local_midnight_utc)),
     ).order_by(StandInstance.expires, StandInstance.id)).all()
     count = 0
     if due:
@@ -55,10 +55,17 @@ def _sweep() -> None:
         queue_expired(session, now())
 
 
+def _seconds_until_midnight() -> float:
+    current = datetime.now()
+    midnight = datetime.combine(current.date() + timedelta(days=1), time.min)
+    # Local calendar days can contain 23 or 25 hours when the clocks change.
+    return midnight.timestamp() - current.timestamp()
+
+
 async def run(stop: asyncio.Event) -> None:
     while True:
         try:
-            await asyncio.wait_for(stop.wait(), timeout=CHECK_INTERVAL_SECONDS)
+            await asyncio.wait_for(stop.wait(), timeout=_seconds_until_midnight())
             return
         except TimeoutError:
             pass

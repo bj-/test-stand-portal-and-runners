@@ -1,4 +1,6 @@
+import asyncio
 from datetime import UTC, datetime, time, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -8,6 +10,39 @@ from portal.models import Job, StandBuild, StandInstance, StandPortReservation
 from test_managed_stands import body, client, create, installation, register, session
 from test_stand_deletion import claim_delete, delete_url, finished_instance, private_artifacts
 from test_stand_execution import as_user
+
+
+def test_scheduler_checks_once_per_day_at_local_midnight(monkeypatch):
+    moment = datetime(2026, 11, 24, 15, 30)
+    checks = []
+    stop = asyncio.Event()
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls):
+            return moment
+
+    async def advance_clock(signal, timeout):
+        nonlocal moment
+        if stop.is_set():
+            await signal
+            return
+        signal.close()
+        moment = datetime.fromtimestamp(moment.timestamp() + timeout)
+        raise TimeoutError
+
+    async def run_check(_check):
+        nonlocal moment
+        checks.append(moment)
+        moment += timedelta(seconds=20)
+        if len(checks) == 2:
+            stop.set()
+
+    monkeypatch.setattr(stand_expiry, "datetime", Clock)
+    monkeypatch.setattr(stand_expiry, "asyncio", SimpleNamespace(wait_for=advance_clock, to_thread=run_check))
+    asyncio.run(stand_expiry.run(stop))
+
+    assert checks == [datetime(2026, 11, 25), datetime(2026, 11, 26)]
 
 
 @pytest.mark.parametrize(("offset", "utc_midnight_offset"), [("+03:00", -3), ("-08:00", 8)])
@@ -42,15 +77,17 @@ def test_new_stand_uses_midnight_in_the_requested_offset(client, session, offset
 def test_legacy_stand_waits_for_active_job_then_uses_normal_host_cleanup(client, session, installation):
     instance, build_id, _, secret = finished_instance(client, session, installation)
     row = session.get(StandInstance, instance["id"])
-    expiry = datetime.combine(auth.now().date() - timedelta(days=2), time(12))
+    expiration_date = datetime.now().date() - timedelta(days=2)
+    expiry = datetime.combine(expiration_date, time(12)).astimezone(UTC).replace(tzinfo=None)
+    midnight = datetime.combine(expiration_date + timedelta(days=1), time.min)
+    deadline = midnight.astimezone(UTC).replace(tzinfo=None)
     row.mode, row.created, row.expires = "ephemeral", expiry - timedelta(days=1), expiry
     work = Job(project="ONE", kind="run", status="running", target="feature", title="tests",
                created_by="admin", created=auth.now(), spec={})
     session.add(work)
     session.commit()
 
-    assert stand_expiry.queue_expired(session, expiry + timedelta(hours=1)) == 0
-    deadline = expiry.replace(hour=0) + timedelta(days=1)
+    assert stand_expiry.queue_expired(session, deadline - timedelta(microseconds=1)) == 0
     assert stand_expiry.queue_expired(session, deadline) == 0
     work.status = "done"
     session.commit()

@@ -400,7 +400,7 @@ function StandCreateWizard({ me }: { me: Me }) {
           </section>
           <label>Срок использования<select aria-label="Срок использования" value={draft.mode} onChange={(event) => update({ mode: event.target.value as Draft["mode"] })}>{me.role !== "developer" && <option value="permanent">Постоянный стенд</option>}<option value="ephemeral">Временный стенд</option></select></label>
           {me.role === "developer" && <p className="sub">Разработчику доступны только временные стенды.</p>}
-          {draft.mode === "ephemeral" && <><label>Дата окончания<input type="date" min={localDate(new Date())} value={draft.expires} onChange={(event) => update({ expires: event.target.value })} /></label><p className="sub">Стенд удалится автоматически после окончания выбранного дня по вашему местному времени.</p></>}
+          {draft.mode === "ephemeral" && <><label>Дата окончания<input type="date" min={localDate(new Date())} value={draft.expires} onChange={(event) => update({ expires: event.target.value })} /></label><p className="sub">Стенд доступен по выбранную дату включительно. Портал проверяет сроки в полночь по времени своего хоста.</p></>}
         </>}
         {step === 3 && template && <>
           {nameField}

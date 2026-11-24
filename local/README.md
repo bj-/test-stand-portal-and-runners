@@ -7,6 +7,10 @@ Installer сам выполняет `agent-init`/`agent-start`; ключи и н
 Команды `agent-status`, `agent-stop`, `agent-start` используют тот же `--workspace`.
 Системная служба автозапуска ОС пока не устанавливается.
 
+Укажите часовой пояс хоста в `TZ` в файле `.env` рабочего каталога, например
+`TZ=Europe/Moscow`. Портал использует эту зону для полуночной проверки временных
+стендов. Значение по умолчанию в Docker Compose — `Etc/UTC`.
+
 Launcher использует `docker-compose.yaml` из корня общего checkout и Python 3.12+
 без дополнительных Python-пакетов. Внешний checkout можно выбрать через
 `--portal-source PATH`: launcher ничего не клонирует.
