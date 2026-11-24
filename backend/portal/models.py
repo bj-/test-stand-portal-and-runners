@@ -304,6 +304,7 @@ class StandInstance(Base):
     target_host: Mapped[str] = mapped_column(String(128), index=True)  # стабильный ID хоста, не имя процесса agent
     mode: Mapped[str] = mapped_column(String(20), default="permanent")
     expires: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    delete_after: Mapped[datetime | None] = mapped_column(DateTime)
     profile: Mapped[str] = mapped_column(String(128))
     refs: Mapped[dict] = mapped_column(Json, default=dict)
     environments: Mapped[list] = mapped_column(Json, default=list, server_default="[]")

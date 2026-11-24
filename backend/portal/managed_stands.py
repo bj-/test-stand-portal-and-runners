@@ -8,7 +8,8 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError, field_validator, model_validator
+from pydantic import (BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError,
+                      field_serializer, field_validator, model_validator)
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -34,6 +35,11 @@ data_managers = require(ADMIN, TESTER)
 WAITING = "Ожидает подключения исполнителя шаблонов stand-template-v1"
 MUTATION_NAMESPACE = 0x53545631
 STAND_NAME_LIMIT = 200
+
+
+def _end_of_day(expires: datetime) -> datetime:
+    next_midnight = expires.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    return next_midnight.astimezone(UTC).replace(tzinfo=None)
 
 
 class Input(BaseModel):
@@ -143,8 +149,17 @@ class InstanceIn(InstanceNameIn):
         if value is not None:
             if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
                 raise ValueError("нужна дата с часовым поясом")
-            return value.astimezone(UTC)
+            try:
+                value.astimezone(UTC)
+                _end_of_day(value)
+            except OverflowError:
+                raise ValueError("срок окончания вне допустимого диапазона") from None
         return value
+
+    @field_serializer("expires", when_used="json")
+    def serialize_expiration(self, value: datetime | None) -> datetime | None:
+        # Preserve the UTC request representation used by existing idempotency hashes.
+        return value.astimezone(UTC) if value is not None else None
 
     @field_validator("parameters")
     @classmethod
@@ -641,6 +656,21 @@ def _deletion_job(session, row):
                                            Job.target == row.id).order_by(Job.id.desc()).limit(1))
 
 
+def _stand_locked(session, project, row):
+    pending = session.scalars(select(Job).where(Job.project == row.project, Job.status.in_(("queued", "running"))))
+    return any(locks(job) and lock_key(project, job) == f"{row.project}:stand:{row.id}" for job in pending)
+
+
+def _queue_deletion(session, row, *, created_by, title):
+    workspace_required = session.scalar(select(StandBuild.id).where(
+        StandBuild.project == row.project, StandBuild.stand_id == row.id).limit(1)) is not None
+    session.add(Job(project=row.project, kind="stand-delete", status="queued", target=row.id,
+        title=title, created_by=created_by, created=now(),
+        message="Ожидает исполнителя удаления stand-template-v1-delete",
+        spec={"schema_version": 1, "project": row.project, "stand": row.id, "target_host": row.target_host,
+              "lock": True, "workspace_required": workspace_required}))
+
+
 def _instance_out(session, row, principal=None):
 
     job = _latest_job(session, row)
@@ -691,12 +721,14 @@ def create_instance(code: str, body: InstanceIn, response: Response,
         digest = hashlib.sha256(canonical({"body": request_payload, "owner": owner.login})).hexdigest()
     except (ValueError, TypeError, UnicodeError, RecursionError):
         raise HTTPException(422, "неверный JSON запроса") from None
+    delete_after = _end_of_day(body.expires) if body.expires is not None else None
     _mutation_lock(session)
     try:
         existing = session.scalar(select(StandInstance).where(StandInstance.project == code,
                                                               StandInstance.request_key == idempotency_key))
         if existing is not None:
-            if existing.owner_login != owner.login or existing.request_hash != digest:
+            if (existing.owner_login != owner.login or existing.request_hash != digest
+                    or (existing.delete_after is not None and existing.delete_after != delete_after)):
                 raise HTTPException(409, "ключ идемпотентности уже использован")
             response.status_code = 200
             result = _instance_out(session, existing, principal)
@@ -708,7 +740,9 @@ def create_instance(code: str, body: InstanceIn, response: Response,
         moment = now()
         row = StandInstance(id="stand-" + uuid4().hex, project=code, name=body.name,
             template_key=body.template_key, template_version=body.template_version, owner_login=owner.login,
-            target_host=host.id, mode=body.mode, expires=body.expires.replace(tzinfo=None) if body.expires else None,
+            target_host=host.id, mode=body.mode,
+            expires=body.expires.astimezone(UTC).replace(tzinfo=None) if body.expires is not None else None,
+            delete_after=delete_after,
             profile=body.profile, refs={component["id"]: {"repository": component["repository"], "ref": component["requested_ref"]}
                                       for component in selected}, environments=body.environments,
             parameters=parameters, resources=copy.deepcopy(template["profiles"][body.profile]["resources"]),
@@ -770,16 +804,9 @@ def delete_instance(code: str, instance_id: str, principal: Principal = Depends(
             session.rollback()
             return result
         project = _project(session, code)
-        pending = session.scalars(select(Job).where(Job.project == code, Job.status.in_(("queued", "running"))))
-        if any(locks(job) and lock_key(project, job) == f"{code}:stand:{instance_id}" for job in pending):
+        if _stand_locked(session, project, row):
             raise HTTPException(409, "стенд занят или ожидает выполнения задачи")
-        workspace_required = session.scalar(select(StandBuild.id).where(
-            StandBuild.project == code, StandBuild.stand_id == row.id).limit(1)) is not None
-        session.add(Job(project=code, kind="stand-delete", status="queued", target=row.id,
-            title="Удалить стенд: " + row.name, created_by=owner.login, created=now(),
-            message="Ожидает исполнителя удаления stand-template-v1-delete",
-            spec={"schema_version": 1, "project": code, "stand": row.id, "target_host": row.target_host,
-                  "lock": True, "workspace_required": workspace_required}))
+        _queue_deletion(session, row, created_by=owner.login, title="Удалить стенд: " + row.name)
         session.flush()
         result = _instance_out(session, row, principal)
         _commit(session)

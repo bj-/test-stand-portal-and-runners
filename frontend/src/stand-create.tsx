@@ -17,9 +17,25 @@ const owns = (object: object, key: string) => Object.prototype.hasOwnProperty.ca
 const errorText = (error: unknown) => error instanceof Error ? error.message : "Не удалось выполнить запрос";
 const humanMessage = (message: string) => /stand-template-v1|подключения исполнителя|свободного исполнителя/.test(message)
   ? "Исполнитель на выбранном хосте пока недоступен. Стенд будет ожидать подключения и готовности исполнителя." : message;
+function localDate(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 function tomorrowLocal() {
-  const date = new Date(Date.now() + 24 * 60 * 60 * 1000);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}T${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  return localDate(date);
+}
+
+function localExpiry(date: string) {
+  const nextDay = new Date(`${date}T00:00:00`);
+  nextDay.setHours(24, 0, 0, 0);
+  const endOfDay = new Date(nextDay.getTime() - 1);
+  const offset = -endOfDay.getTimezoneOffset();
+  const minutes = Math.abs(offset);
+  const hoursPart = String(Math.floor(minutes / 60)).padStart(2, "0");
+  const minutesPart = String(minutes % 60).padStart(2, "0");
+  return `${date}T23:59:59.999${offset < 0 ? "-" : "+"}${hoursPart}:${minutesPart}`;
 }
 
 export function StandCreatePage({ me }: { me: Me }) {
@@ -212,7 +228,7 @@ function StandCreateWizard({ me }: { me: Me }) {
     const environments = draft.environments.split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
     if (environments.some((item) => !/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/.test(item))) return "Окружения: используйте идентификаторы с латинской буквы, затем латинские буквы, цифры, _, . или - (до 128 символов).";
     if (me.role === "developer" && draft.mode !== "ephemeral") return "Разработчику доступны только временные стенды.";
-    if (draft.mode === "ephemeral" && (!draft.expires || !Number.isFinite(new Date(draft.expires).getTime()) || new Date(draft.expires).getTime() <= Date.now())) return "Укажите будущую дату окончания временного стенда.";
+    if (draft.mode === "ephemeral" && (!draft.expires || !Number.isFinite(Date.parse(localExpiry(draft.expires))) || draft.expires < localDate(new Date()))) return "Укажите дату окончания временного стенда, начиная с сегодняшнего дня.";
     return "";
   }
   function buildBody(): StandCreateRequest {
@@ -228,7 +244,7 @@ function StandCreateWizard({ me }: { me: Me }) {
     return { name: name.trim(), template_key: template!.id, template_version: template!.version, target_host: draft.host, profile: draft.profile,
       components, parameters,
       environments: [...new Set(draft.environments.split(/[,\n]/).map((item) => item.trim()).filter(Boolean))], mode: draft.mode,
-      expires: draft.mode === "ephemeral" ? new Date(draft.expires).toISOString() : null, ports: {}, install_test_data: draft.installTestData };
+      expires: draft.mode === "ephemeral" ? localExpiry(draft.expires) : null, ports: {}, install_test_data: draft.installTestData };
   }
   function next() {
     const message = validate(step);
@@ -384,7 +400,7 @@ function StandCreateWizard({ me }: { me: Me }) {
           </section>
           <label>Срок использования<select aria-label="Срок использования" value={draft.mode} onChange={(event) => update({ mode: event.target.value as Draft["mode"] })}>{me.role !== "developer" && <option value="permanent">Постоянный стенд</option>}<option value="ephemeral">Временный стенд</option></select></label>
           {me.role === "developer" && <p className="sub">Разработчику доступны только временные стенды.</p>}
-          {draft.mode === "ephemeral" && <><label>Срок окончания (местное время)<input aria-label="Срок окончания (местное время)" type="datetime-local" value={draft.expires} onChange={(event) => update({ expires: event.target.value })} /></label><p className="sub">Дата сохраняется с учётом вашего часового пояса. Автоматическая остановка по сроку появится на отдельном этапе; пока завершение работы нужно контролировать вручную.</p></>}
+          {draft.mode === "ephemeral" && <><label>Дата окончания<input type="date" min={localDate(new Date())} value={draft.expires} onChange={(event) => update({ expires: event.target.value })} /></label><p className="sub">Стенд удалится автоматически после окончания выбранного дня по вашему местному времени.</p></>}
         </>}
         {step === 3 && template && <>
           {nameField}
@@ -397,7 +413,7 @@ function StandCreateWizard({ me }: { me: Me }) {
             <dt>Тестовые данные</dt><dd>{!draft.installTestData ? "Без установки комплекта" : profileData.length > 0
               ? `${checked?.data_bundle?.title ?? dataBundle?.title} · ${(checked?.data_bundle?.entries ?? profileData).map((entry) => template.data_modules?.[entry.module]?.title ?? entry.module).join(", ")}`
               : "Комплект не настроен для профиля"}</dd>
-            <dt>Срок</dt><dd>{draft.mode === "permanent" ? "Постоянный" : `До ${new Date(draft.expires).toLocaleString("ru-RU")}`}</dd>
+            <dt>Срок</dt><dd>{draft.mode === "permanent" ? "Постоянный" : `По ${new Date(`${draft.expires}T00:00:00`).toLocaleDateString("ru-RU")} включительно`}</dd>
             {template.components.map((component) => <SummaryComponent key={component.id} id={component.id} choice={componentChoices[component.id]} />)}
             {Object.entries(template.parameters).map(([name, spec]) => <SummaryParameter key={name} name={spec.title ?? name} value={spec.enum ? String(spec.enum[Number(draft.parameters[name])]) : spec.type === "boolean" ? draft.parameters[name] === "true" ? "Да" : "Нет" : draft.parameters[name]} />)}
             <dt>Порты</dt><dd>Автоматический выбор. Проверка покажет предварительные порты; окончательное резервирование — при создании.</dd>

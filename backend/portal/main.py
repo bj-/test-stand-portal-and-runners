@@ -1,4 +1,6 @@
+import asyncio
 from collections import Counter, defaultdict
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -10,7 +12,8 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import ai_guard, git_servers, help, jobs, managed_stands, stand_execution, stands, test_data, updates, users
+from . import (ai_guard, git_servers, help, jobs, managed_stands, stand_execution, stand_expiry,
+               stands, test_data, updates, users)
 from .auth import ADMIN, COOKIE, LLM, READERS, TESTER, USER_ROLES, Principal, require, require_read
 from .config import artifacts_dir, static_dir
 from .db import get_session
@@ -18,7 +21,19 @@ from .importer import sync_project
 from .models import Bug, Run, TestResult
 from .registry import RegistryError, load_registry
 
-app = FastAPI(title="Test Portal", version="0.2.0", docs_url=None, redoc_url=None, openapi_url=None)
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    stop = asyncio.Event()
+    expiration = asyncio.create_task(stand_expiry.run(stop))
+    try:
+        yield
+    finally:
+        stop.set()
+        await expiration
+
+
+app = FastAPI(title="Test Portal", version="0.2.1", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
 
 @app.exception_handler(RegistryError)

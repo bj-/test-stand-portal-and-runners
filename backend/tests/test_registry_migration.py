@@ -66,7 +66,8 @@ def test_registry_migration_defaults_and_roundtrip_preserve_existing_data(tmp_pa
     after = snapshot()
     assert set(after) == set(before) | {"git_servers"}
     assert after["git_servers"]["rows"] == []
-    changed = {"projects": ["configuration", "stand_data_bundle"], "stand_instances": ["environments", "request_hash", "deployed_build_id", "deleted_at"],
+    changed = {"projects": ["configuration", "stand_data_bundle"],
+               "stand_instances": ["environments", "request_hash", "deployed_build_id", "deleted_at", "delete_after"],
                "stand_templates": ["output_binding_titles", "name_ref_exclusions", "technical_components"],
                "api_tokens": ["stand_host", "last_seen"], "stand_repositories": ["git_url", "git_server_id"]}
     for table, previous in before.items():
@@ -79,12 +80,12 @@ def test_registry_migration_defaults_and_roundtrip_preserve_existing_data(tmp_pa
         assert [column[1] for column in after[table]["columns"][-count:]] == changed[table]
     assert all(column[2:5] == ("JSON", 0, None) for column in after["projects"]["columns"][-2:])
     assert after["projects"]["rows"][0][-2:] == (None, None)
-    assert after["stand_instances"]["columns"][-4][2:5] == ("JSON", 1, "'[]'")
-    assert json.loads(after["stand_instances"]["rows"][0][-4]) == []
-    assert after["stand_instances"]["columns"][-3][2:5] == ("VARCHAR(64)", 0, None)
-    assert after["stand_instances"]["columns"][-2][2:5] == ("VARCHAR(128)", 0, None)
-    assert after["stand_instances"]["columns"][-1][2:5] == ("DATETIME", 0, None)
-    assert after["stand_instances"]["rows"][0][-3:] == (None, None, None)
+    assert after["stand_instances"]["columns"][-5][2:5] == ("JSON", 1, "'[]'")
+    assert json.loads(after["stand_instances"]["rows"][0][-5]) == []
+    assert after["stand_instances"]["columns"][-4][2:5] == ("VARCHAR(64)", 0, None)
+    assert after["stand_instances"]["columns"][-3][2:5] == ("VARCHAR(128)", 0, None)
+    assert all(column[2:5] == ("DATETIME", 0, None) for column in after["stand_instances"]["columns"][-2:])
+    assert after["stand_instances"]["rows"][0][-4:] == (None, None, None, None)
     assert all(column[2:5] == ("JSON", 0, None) for column in after["stand_templates"]["columns"][-3:])
     assert after["stand_templates"]["rows"][0][-3:] == (None, None, None)
     assert after["stand_repositories"]["columns"][-2][2:5] == ("VARCHAR(2048)", 0, None)
