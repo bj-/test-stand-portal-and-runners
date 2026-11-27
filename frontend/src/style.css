@@ -313,6 +313,20 @@ a.stat.critical { background: color-mix(in srgb, var(--critical) 6%, var(--surfa
 .gpanel > header .more { font-size: 13px; color: var(--ink-2); text-decoration: none; }
 .gpanel > header .more:hover { color: var(--accent); }
 .gpanel-body { padding: 10px 14px 12px; }
+
+.summary-tile { margin-bottom: 12px; border-inline-start: 3px solid var(--accent); }
+.summary-tile p, .summary-list p { margin: 4px 0 0; }
+.summary-latest, .summary-head, .summary-downloads, .summary-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; }
+.summary-latest { justify-content: space-between; }
+.summary-latest > div { flex: 1 1 420px; min-width: 0; overflow-wrap: anywhere; }
+.summary-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-block: 14px; }
+.summary-list { padding: 0; list-style: none; display: grid; gap: 10px; }
+.summary-list .gpanel-body { padding-block: 14px; overflow-wrap: anywhere; }
+.summary-list h2 { margin: 5px 0; font-size: 18px; }
+.summary-head { justify-content: space-between; }
+.summary-head h1 { margin: 4px 0; overflow-wrap: anywhere; }
+.summary-downloads { gap: 10px 16px; }
+.summary-back { margin: 0 0 12px; }
 .flat-chart .chart { border: 0; padding: 0; background: none; }
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 12px; align-items: start; }
 

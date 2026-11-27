@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { getJson, type Bug, type HelpPage, type HelpSection, type Job, type Project, type Run, type Stand, type Stats } from "./api";
 import { Loaded, Markdown, Severity, formatDate, useLoad } from "./common";
 import { RunResult, Trend } from "./pages";
+import { ProjectSummariesTile } from "./project-summaries";
 
 const REFRESH_MS = 20000;
 const CLOSED = new Set(["closed", "fixed", "verified", "resolved", "rejected", "duplicate", "wontfix", "закрыт", "исправлен"]);
@@ -72,7 +73,7 @@ export function DashboardPage({ canRun }: { canRun: boolean }) {
       <header className="page-head">
         <h1>Обзор</h1>
         {(projects?.length ?? 0) > 1 && (
-          <select value={code} onChange={(e) => setProject(e.target.value)}>
+          <select aria-label="Проект" value={code} onChange={(e) => setProject(e.target.value)}>
             {projects?.map((p) => <option key={p.code} value={p.code}>{p.title}</option>)}
           </select>
         )}
@@ -81,6 +82,7 @@ export function DashboardPage({ canRun }: { canRun: boolean }) {
       </header>
       {error && <p className="message error">Не удалось обновить: {error}</p>}
       {projects?.length === 0 && <p className="message">Проектов нет</p>}
+      {code && <ProjectSummariesTile key={code} project={code} />}
       {!data && !error && projects?.length !== 0 && <p className="message">Загрузка…</p>}
       {data && <Dashboard data={data} />}
     </>

@@ -41,6 +41,8 @@ def test_personal_and_mutating_routes_require_login(client):
     public_reads = {
         "/api/health", "/api/auth/me", "/api/projects", "/api/runs", "/api/runs/{run_id}",
         "/api/runs/{run_id}/report", "/api/runs/{run_id}/allure", "/api/runs/{base}/compare/{target}",
+        "/api/projects/{code}/summaries", "/api/projects/{code}/summaries/{summary_id}",
+        "/api/projects/{code}/summaries/{summary_id}/report", "/api/projects/{code}/summaries/{summary_id}/presentation",
         "/api/bugs", "/api/bugs/{bug_id}", "/api/stats", "/api/help", "/api/help/pages/{slug}",
         "/api/projects/{code}/stands", "/api/projects/{code}/catalog", "/api/projects/{code}/catalog/tests",
         "/api/projects/{code}/catalog/branches", "/api/projects/{code}/catalog/test-ids",

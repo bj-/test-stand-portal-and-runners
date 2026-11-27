@@ -61,10 +61,10 @@ function portalUrl(url: string) {
   return defaultUrlTransform(url);
 }
 
-export function Markdown({ children }: { children: string }) {
+export function Markdown({ children, resolveUrl }: { children: string; resolveUrl?: (url: string) => string | undefined }) {
   return (
     <div className="markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={portalUrl}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={(url) => portalUrl(resolveUrl?.(url) ?? url)}>
         {children}
       </ReactMarkdown>
     </div>

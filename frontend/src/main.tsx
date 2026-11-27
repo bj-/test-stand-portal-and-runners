@@ -12,6 +12,7 @@ import { StandCatalogPage, StandProjectCreatePage } from "./stand-catalog";
 import { StandDetailPage } from "./stand-detail";
 import { applyTheme } from "./confirm";
 import { BugPage, BugsPage, RunPage, RunsPage, StatsPage } from "./pages";
+import { ProjectSummariesPage, ProjectSummaryPage } from "./project-summaries";
 import { UpdatesPage } from "./updates";
 import "./style.css";
 
@@ -78,6 +79,7 @@ function App() {
         <span className="brand">Test Portal</span>
         <NavLink to="/" end>Обзор</NavLink>
         <NavLink to="/runs">Прогоны</NavLink>
+        <NavLink to="/summaries">Сводки</NavLink>
         <NavLink to="/stands">Стенды</NavLink>
         <NavLink to="/jobs">Задачи</NavLink>
         <NavLink to="/bugs">Баги</NavLink>
@@ -104,6 +106,8 @@ function App() {
           <Route path="/" element={<DashboardPage canRun={canRun} />} />
           <Route path="/runs" element={<RunsPage />} />
           <Route path="/runs/:id" element={<RunPage />} />
+          <Route path="/summaries" element={<ProjectSummariesPage />} />
+          <Route path="/summaries/:project/:id" element={<ProjectSummaryPage />} />
           <Route path="/help" element={<HelpCenter />} />
           <Route path="/help/:slug" element={<HelpPageView />} />
           <Route path="/stands" element={<StandsPage key={me.is_guest ? "guest" : me.name} me={me} storageScope={me.is_guest ? "guest" : `user:${me.name}`} />} />

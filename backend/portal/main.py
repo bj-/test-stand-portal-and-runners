@@ -19,6 +19,7 @@ from .config import artifacts_dir, static_dir
 from .db import get_session
 from .importer import sync_project
 from .models import Bug, Run, TestResult
+from .project_summaries import router as project_summaries_router
 from .registry import RegistryError, load_registry
 
 
@@ -33,7 +34,7 @@ async def lifespan(_app: FastAPI):
         await expiration
 
 
-app = FastAPI(title="Test Portal", version="0.2.2", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+app = FastAPI(title="Test Portal", version="0.3.0", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
 
 @app.exception_handler(RegistryError)
@@ -395,6 +396,7 @@ app.include_router(stand_execution.router)
 app.include_router(test_data.router)
 app.include_router(stands.router)
 app.include_router(help.router)
+app.include_router(project_summaries_router)
 app.include_router(api)
 
 
